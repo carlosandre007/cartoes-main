@@ -1,0 +1,6 @@
+{
+  "name": "AUREUM - Private Banking & Central Financeira",
+  "description": "Plataforma de gestão financeira pessoal e empresarial com fluxo financeiro unificado, cartões de crédito, custos fixos, carnês, simulação de quitação de dívidas e relatórios avançados.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
