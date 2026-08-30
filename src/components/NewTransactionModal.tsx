@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { X, Sparkles, Plus, Calendar, DollarSign, Building, Wallet, CreditCard, Repeat, FileText, CheckCircle2 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
+import { addMonthsToCompetence } from '../utils/financialCalculations';
+import { CurrencyInput } from './CurrencyInput';
 import {
   TransactionType,
   TransactionStatus,
   OrigemFinanceira,
   RecorrenciaTipo,
+  Transaction,
 } from '../types';
 
 interface NewTransactionModalProps {
@@ -17,6 +20,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
   const {
     addTransaction,
     updateTransaction,
+    transactions,
     cards,
     bankAccounts,
     contracts,
@@ -24,12 +28,13 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     addCard,
     addBankAccount,
     addContract,
+    updateContract,
   } = useFinancial();
 
   // Form Fields
   const [tipo, setTipo] = useState<TransactionType>('DESPESA');
   const [descricao, setDescricao] = useState('');
-  const [valor, setValor] = useState('');
+  const [valor, setValor] = useState<number>(0);
   const [data, setData] = useState(() => new Date().toISOString().split('T')[0]);
   const [categoria, setCategoria] = useState('Serviços');
   const [empresa, setEmpresa] = useState('Pessoal');
@@ -38,6 +43,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
   const [origemFinanceira, setOrigemFinanceira] = useState<OrigemFinanceira>('CONTA_BANCARIA');
   const [status, setStatus] = useState<TransactionStatus>('PAGO');
   const [contaBancariaId, setContaBancariaId] = useState(bankAccounts[0]?.id || '');
+  const [installmentEditOption, setInstallmentEditOption] = useState<'single' | 'future' | 'all'>('single');
 
   // Conditional Fields: Cartão
   const [cartaoId, setCartaoId] = useState(cards[0]?.id || '');
@@ -45,6 +51,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
   const [melhorDiaCompra, setMelhorDiaCompra] = useState(10);
   const [diaVencimento, setDiaVencimento] = useState(20);
   const [gerarParcelasAutomaticas, setGerarParcelasAutomaticas] = useState(true);
+  const [cartaoRecorrente, setCartaoRecorrente] = useState(false);
 
   // Conditional Fields: Custo Fixo
   const [recorrencia, setRecorrencia] = useState<RecorrenciaTipo>('MENSAL');
@@ -53,6 +60,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     d.setMonth(d.getMonth() + 1);
     return d.toISOString().split('T')[0];
   });
+  const [dataTerminoCustoFixo, setDataTerminoCustoFixo] = useState('');
 
   // Conditional Fields: Financiamento / Empréstimo / Carnê
   const [instituicao, setInstituicao] = useState('Itaú BBA / Aureum Credit');
@@ -60,6 +68,9 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
   const [parcelasContrato, setParcelasContrato] = useState(12);
   const [parcelaAtual, setParcelaAtual] = useState(1);
   const [taxaJurosAnual, setTaxaJurosAnual] = useState('9.8');
+  const [cetMensal, setCetMensal] = useState('');
+  const [cetAnual, setCetAnual] = useState('');
+  const [proximoVencimentoFinanciamento, setProximoVencimentoFinanciamento] = useState(() => new Date().toISOString().split('T')[0]);
   const [contratoId, setContratoId] = useState(contracts[0]?.id || '');
 
   // Inline Modals for Entities Creation
@@ -82,7 +93,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     limiteTotal: '10000',
     fechamentoDia: 10,
     vencimentoDia: 20,
-    corGradiente: 'from-amber-950 via-zinc-900 to-zinc-950',
+    corGradiente: '#78350f',
     categoriaCard: 'AUREUM BLACK',
   });
 
@@ -95,6 +106,9 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     parcelasTotal: 24,
     valorParcelaMensal: '4500',
     taxaJurosAnual: '9.5',
+    cetMensal: '',
+    cetAnual: '',
+    proximoVencimento: new Date().toISOString().split('T')[0],
     categoria: 'Financiamento Imobiliário',
   });
 
@@ -112,13 +126,23 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
   }, [cards, cartaoId]);
 
   useEffect(() => {
+    const selectedCard = cards.find((card) => card.id === cartaoId);
+    if (!selectedCard) return;
+    setMelhorDiaCompra(selectedCard.fechamentoDia);
+    setDiaVencimento(selectedCard.vencimentoDia);
+  }, [cards, cartaoId]);
+
+  useEffect(() => {
     if (!contratoId && contracts.length > 0) {
       setContratoId(contracts[0].id);
     }
   }, [contracts, contratoId]);
 
   useEffect(() => {
-    if (origemFinanceira === 'CARTAO_CREDITO' && !modalPrefillData?.id) {
+    if (
+      (origemFinanceira === 'CARTAO_CREDITO' || origemFinanceira === 'CUSTO_FIXO') &&
+      !modalPrefillData?.id
+    ) {
       setStatus('PENDENTE');
     }
   }, [origemFinanceira, modalPrefillData]);
@@ -128,7 +152,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     if (!isOpen) return;
     setTipo('DESPESA');
     setDescricao('');
-    setValor('');
+    setValor(0);
     setData(new Date().toISOString().slice(0, 10));
     setCategoria('Serviços');
     setEmpresa('Pessoal');
@@ -141,10 +165,15 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     setContratoId(contracts[0]?.id || '');
     setParcelasTotal(1);
     setGerarParcelasAutomaticas(true);
+    setCartaoRecorrente(false);
+    setDataTerminoCustoFixo('');
+    setCetMensal('');
+    setCetAnual('');
+    setProximoVencimentoFinanciamento(new Date().toISOString().split('T')[0]);
     if (modalPrefillData) {
       if (modalPrefillData.tipo) setTipo(modalPrefillData.tipo);
       if (modalPrefillData.descricao) setDescricao(modalPrefillData.descricao);
-      if (modalPrefillData.valor) setValor(String(modalPrefillData.valor));
+      if (modalPrefillData.valor !== undefined) setValor(modalPrefillData.valor);
       if (modalPrefillData.data) setData(modalPrefillData.data);
       if (modalPrefillData.categoria) setCategoria(modalPrefillData.categoria);
       if (modalPrefillData.empresa) setEmpresa(modalPrefillData.empresa);
@@ -158,10 +187,12 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
         setParcelasTotal(modalPrefillData.cartaoDetalhes.parcelasTotal || 1);
         setMelhorDiaCompra(modalPrefillData.cartaoDetalhes.melhorDiaCompra || 10);
         setDiaVencimento(modalPrefillData.cartaoDetalhes.diaVencimento || 20);
+        setCartaoRecorrente(Boolean(modalPrefillData.cartaoDetalhes.recorrente));
       }
       if (modalPrefillData.custoFixoDetalhes) {
         setRecorrencia(modalPrefillData.custoFixoDetalhes.recorrencia);
         setProximoVencimento(modalPrefillData.custoFixoDetalhes.proximoVencimento);
+        setDataTerminoCustoFixo(modalPrefillData.custoFixoDetalhes.dataTermino || '');
       }
       if (modalPrefillData.financiamentoDetalhes) {
         const details = modalPrefillData.financiamentoDetalhes;
@@ -170,10 +201,22 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
         setParcelasContrato(details.parcelasTotal);
         setParcelaAtual(details.parcelaAtual);
         setTaxaJurosAnual(String(details.taxaJurosAnual));
+        setCetMensal(String(details.cetMensal || ''));
+        setCetAnual(String(details.cetAnual || ''));
+        setProximoVencimentoFinanciamento(details.proximoVencimento || modalPrefillData.data || new Date().toISOString().split('T')[0]);
         setContratoId(details.contratoId);
       }
     }
+    setInstallmentEditOption('single');
   }, [modalPrefillData, isOpen]);
+
+  const relatedInstallments = React.useMemo(() => {
+    if (!modalPrefillData?.id || !modalPrefillData.cartaoDetalhes?.parcelasTotal) return [];
+    const baseId = modalPrefillData.id.replace(/-\d+$/, '');
+    return transactions
+      .filter((t) => t.origemFinanceira === 'CARTAO_CREDITO' && (t.id === baseId || t.id.startsWith(`${baseId}-`)))
+      .sort((a, b) => (a.cartaoDetalhes?.parcelaAtual || 0) - (b.cartaoDetalhes?.parcelaAtual || 0));
+  }, [modalPrefillData, transactions, isOpen]);
 
   if (!isOpen) return null;
 
@@ -216,6 +259,8 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
       categoriaCard: newCard.categoriaCard,
     });
     setCartaoId(createdId);
+    setMelhorDiaCompra(newCard.fechamentoDia);
+    setDiaVencimento(newCard.vencimentoDia);
     setShowAddCard(false);
     setNewCard({
       nome: '',
@@ -224,7 +269,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
       limiteTotal: '10000',
       fechamentoDia: 10,
       vencimentoDia: 20,
-      corGradiente: 'from-amber-950 via-zinc-900 to-zinc-950',
+      corGradiente: '#78350f',
       categoriaCard: 'AUREUM BLACK',
     });
   };
@@ -248,7 +293,9 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
       parcelasPagas: 0,
       valorParcelaMensal: parseFloat(newContract.valorParcelaMensal) || valTotal / pTotal,
       taxaJurosAnual: parseFloat(newContract.taxaJurosAnual) || 0,
-      proximoVencimento: new Date().toISOString().split('T')[0],
+      cetMensal: parseFloat(newContract.cetMensal) || 0,
+      cetAnual: parseFloat(newContract.cetAnual) || 0,
+      proximoVencimento: newContract.proximoVencimento,
       categoria: newContract.categoria,
       status: 'EM_DIA',
     });
@@ -257,15 +304,37 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     setValorTotalContrato(newContract.valorTotal);
     setParcelasContrato(pTotal);
     setTaxaJurosAnual(newContract.taxaJurosAnual);
+    setCetMensal(newContract.cetMensal);
+    setCetAnual(newContract.cetAnual);
+    setProximoVencimentoFinanciamento(newContract.proximoVencimento);
     setShowAddContract(false);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const numValor = parseFloat(valor.replace(',', '.')) || 0;
-    if (numValor <= 0 || !descricao) {
-      alert('Por favor, preencha a descrição e um valor válido.');
+    const numValor = valor;
+    const valorInvalido = origemFinanceira === 'CUSTO_FIXO'
+      ? false
+      : origemFinanceira === 'CARTAO_CREDITO'
+        ? numValor === 0
+        : numValor <= 0;
+    if (!descricao || valorInvalido) {
+      alert(
+        origemFinanceira === 'CUSTO_FIXO'
+          ? 'Por favor, preencha a descrição do custo fixo.'
+          : origemFinanceira === 'CARTAO_CREDITO'
+            ? 'Preencha a descrição e informe um valor diferente de zero. Use valor negativo para estorno.'
+          : 'Por favor, preencha a descrição e um valor válido.'
+      );
+      return;
+    }
+    if (
+      origemFinanceira === 'CUSTO_FIXO' &&
+      dataTerminoCustoFixo &&
+      dataTerminoCustoFixo < data
+    ) {
+      alert('A data de término do custo fixo não pode ser anterior ao primeiro vencimento.');
       return;
     }
 
@@ -293,14 +362,20 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
         cartaoId: cartaoId,
         cartaoNome: selectedCard?.nome || 'Cartão Aureum',
         parcelaAtual: 1,
-        parcelasTotal: parcelasTotal,
+        parcelasTotal: cartaoRecorrente ? undefined : parcelasTotal,
         melhorDiaCompra: melhorDiaCompra,
         diaVencimento: diaVencimento,
+        recorrente: cartaoRecorrente,
+        recorrenciaId: cartaoRecorrente
+          ? modalPrefillData?.cartaoDetalhes?.recorrenciaId || `rec-card-${globalThis.crypto?.randomUUID?.() || Date.now()}`
+          : undefined,
+        recorrenciaAtiva: cartaoRecorrente || undefined,
       };
     } else if (origemFinanceira === 'CUSTO_FIXO') {
       txData.custoFixoDetalhes = {
         recorrencia,
         proximoVencimento,
+        dataTermino: dataTerminoCustoFixo || undefined,
         ativo: true,
       };
     } else if (
@@ -315,17 +390,90 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
         parcelasTotal: parcelasContrato,
         parcelaAtual,
         taxaJurosAnual: parseFloat(taxaJurosAnual) || 0,
+        cetMensal: parseFloat(cetMensal) || 0,
+        cetAnual: parseFloat(cetAnual) || 0,
+        proximoVencimento: proximoVencimentoFinanciamento,
         contratoId: contratoId || `contract-${globalThis.crypto?.randomUUID?.() || Date.now()}`,
       };
+      if (contratoId && contracts.some((contract) => contract.id === contratoId)) {
+        updateContract(contratoId, {
+          taxaJurosAnual: parseFloat(taxaJurosAnual) || 0,
+          cetMensal: parseFloat(cetMensal) || 0,
+          cetAnual: parseFloat(cetAnual) || 0,
+          proximoVencimento: proximoVencimentoFinanciamento,
+        });
+      }
     }
 
     if (modalPrefillData?.id) {
-      updateTransaction(modalPrefillData.id, txData);
+      if (
+        origemFinanceira === 'CARTAO_CREDITO' &&
+        modalPrefillData.cartaoDetalhes?.parcelasTotal &&
+        modalPrefillData.cartaoDetalhes.parcelasTotal > 1
+      ) {
+        const baseId = modalPrefillData.id.replace(/-\d+$/, '');
+        const currentParcel = modalPrefillData.cartaoDetalhes.parcelaAtual || 1;
+        const totalParcelas = modalPrefillData.cartaoDetalhes.parcelasTotal || 1;
+
+        if (installmentEditOption === 'single') {
+          // Option 1: Only this parcel
+          updateTransaction(modalPrefillData.id, txData);
+        } else if (installmentEditOption === 'future') {
+          // Option 2: This and subsequent parcels
+          const linked = transactions.filter((t) => t.origemFinanceira === 'CARTAO_CREDITO' && (t.id === baseId || t.id.startsWith(`${baseId}-`)));
+          linked.forEach((t) => {
+            const partNum = t.cartaoDetalhes?.parcelaAtual || 1;
+            if (partNum >= currentParcel) {
+              const monthDiff = partNum - currentParcel;
+              const dateShifted = new Date(`${data}T12:00:00`);
+              dateShifted.setMonth(dateShifted.getMonth() + monthDiff);
+
+              const updatedData = {
+                ...txData,
+                descricao: `${descricao} (${partNum}/${totalParcelas})`,
+                data: dateShifted.toISOString().slice(0, 10),
+                cartaoDetalhes: {
+                  ...txData.cartaoDetalhes,
+                  parcelaAtual: partNum,
+                  parcelasTotal: totalParcelas,
+                  competenciaFatura: addMonthsToCompetence(txData.cartaoDetalhes.competenciaFatura, monthDiff),
+                }
+              };
+              updateTransaction(t.id, updatedData);
+            }
+          });
+        } else if (installmentEditOption === 'all') {
+          // Option 3: All parcels
+          const linked = transactions.filter((t) => t.origemFinanceira === 'CARTAO_CREDITO' && (t.id === baseId || t.id.startsWith(`${baseId}-`)));
+          linked.forEach((t) => {
+            const partNum = t.cartaoDetalhes?.parcelaAtual || 1;
+            const monthDiff = partNum - currentParcel;
+            const dateShifted = new Date(`${data}T12:00:00`);
+            dateShifted.setMonth(dateShifted.getMonth() + monthDiff);
+
+            const updatedData = {
+              ...txData,
+              descricao: `${descricao} (${partNum}/${totalParcelas})`,
+              data: dateShifted.toISOString().slice(0, 10),
+              cartaoDetalhes: {
+                ...txData.cartaoDetalhes,
+                parcelaAtual: partNum,
+                parcelasTotal: totalParcelas,
+                competenciaFatura: addMonthsToCompetence(txData.cartaoDetalhes.competenciaFatura, monthDiff),
+              }
+            };
+            updateTransaction(t.id, updatedData);
+          });
+        }
+      } else {
+        // Normal update
+        updateTransaction(modalPrefillData.id, txData);
+      }
     } else {
       const shouldGenerateInstallments =
         gerarParcelasAutomaticas &&
         !modalPrefillData?.id &&
-        ((origemFinanceira === 'CARTAO_CREDITO' && parcelasTotal > 1) ||
+        ((origemFinanceira === 'CARTAO_CREDITO' && !cartaoRecorrente && parcelasTotal > 1) ||
           (['FINANCIAMENTO', 'EMPRESTIMO', 'CARNE', 'CONSORCIO'].includes(origemFinanceira) &&
             parcelasContrato > 1 && !modalPrefillData?.financiamentoDetalhes));
       addTransaction(txData, shouldGenerateInstallments);
@@ -334,7 +482,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
 
     // Reset default form state
     setDescricao('');
-    setValor('');
+    setValor(0);
   };
 
   return (
@@ -406,16 +554,27 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
             </div>
 
             <div className="space-y-1">
-              <label className="text-zinc-300 font-semibold block">Valor (R$) *</label>
-              <input
-                type="number"
-                step="0.01"
-                required
+              <label className="text-zinc-300 font-semibold block">
+                Valor (R$) {origemFinanceira === 'CUSTO_FIXO' ? '(opcional)' : '*'}
+              </label>
+              <CurrencyInput
                 value={valor}
-                onChange={(e) => setValor(e.target.value)}
-                placeholder="0,00"
+                onChange={setValor}
+                allowNegative={origemFinanceira === 'CARTAO_CREDITO'}
+                required={origemFinanceira !== 'CUSTO_FIXO'}
+                placeholder={origemFinanceira === 'CUSTO_FIXO' ? '0,00' : '0,00'}
                 className="w-full px-3.5 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-amber-400 font-mono font-bold text-sm focus:outline-none focus:border-amber-500/50"
               />
+              {origemFinanceira === 'CUSTO_FIXO' && (
+                <span className="text-[10px] text-zinc-500 mt-1 block">
+                  Para água, energia ou gás, deixe vazio e informe o valor pela edição mensal.
+                </span>
+              )}
+              {origemFinanceira === 'CARTAO_CREDITO' && (
+                <span className="text-[10px] text-zinc-500 mt-1 block">
+                  Para estorno ou crédito na fatura, informe o valor com sinal negativo.
+                </span>
+              )}
             </div>
           </div>
 
@@ -492,6 +651,8 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                 className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-zinc-100 focus:outline-none focus:border-amber-500/50"
               >
                 <option value="Diretoria">Diretoria Private</option>
+                <option value="Casa">Casa</option>
+                <option value="Indefinido">Indefinido</option>
                 <option value="Operacional">Operacional</option>
                 <option value="Administrativo">Administrativo</option>
                 <option value="Patrimonial">Patrimonial & Blindagem</option>
@@ -682,6 +843,11 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                         className="w-1/2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200"
                       />
                     </div>
+                    <label className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-400">
+                      Cor
+                      <input type="color" value={newCard.corGradiente} onChange={(e) => setNewCard({ ...newCard, corGradiente: e.target.value })} className="w-8 h-7 bg-transparent cursor-pointer" />
+                      <span className="font-mono">{newCard.corGradiente}</span>
+                    </label>
                   </div>
                   <div className="flex justify-end gap-2">
                     <button
@@ -706,7 +872,15 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                     <label className="text-zinc-400 block mb-1">Selecione o Cartão</label>
                     <select
                       value={cartaoId}
-                      onChange={(e) => setCartaoId(e.target.value)}
+                      onChange={(e) => {
+                        const nextCardId = e.target.value;
+                        const nextCard = cards.find((card) => card.id === nextCardId);
+                        setCartaoId(nextCardId);
+                        if (nextCard) {
+                          setMelhorDiaCompra(nextCard.fechamentoDia);
+                          setDiaVencimento(nextCard.vencimentoDia);
+                        }
+                      }}
                       className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200"
                     >
                       {cards.map((c) => (
@@ -724,9 +898,19 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                       min="1"
                       max="48"
                       value={parcelasTotal}
+                      disabled={cartaoRecorrente}
                       onChange={(e) => setParcelasTotal(parseInt(e.target.value) || 1)}
                       className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200 font-mono"
                     />
+                    <label className="mt-2 flex items-center gap-2 text-[11px] text-amber-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={cartaoRecorrente}
+                        onChange={(e) => { setCartaoRecorrente(e.target.checked); if (e.target.checked) setParcelasTotal(1); }}
+                        className="rounded border-zinc-700 text-amber-500"
+                      />
+                      Recorrente mensal (assinatura ou plano)
+                    </label>
                   </div>
                 </div>
               )}
@@ -756,7 +940,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                 </div>
               </div>
 
-              {parcelasTotal > 1 && (
+              {parcelasTotal > 1 && !cartaoRecorrente && (
                 <div className="flex items-center gap-2 pt-1">
                   <input
                     type="checkbox"
@@ -770,6 +954,79 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                   </label>
                 </div>
               )}
+
+              {/* SMART INSTALLMENT EDIT PANEL */}
+              {modalPrefillData?.id && modalPrefillData.cartaoDetalhes?.parcelasTotal && modalPrefillData.cartaoDetalhes.parcelasTotal > 1 && (
+                <div className="p-4 bg-zinc-950/60 border border-zinc-800 rounded-xl space-y-3 mt-3">
+                  <div className="text-xs font-bold text-zinc-300">
+                    Esta compra é parcelada (Parcela {modalPrefillData.cartaoDetalhes.parcelaAtual}/{modalPrefillData.cartaoDetalhes.parcelasTotal})
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="installmentEditOption"
+                        value="single"
+                        checked={installmentEditOption === 'single'}
+                        onChange={() => setInstallmentEditOption('single')}
+                        className="rounded-full border-zinc-700 text-amber-500 focus:ring-amber-500"
+                      />
+                      <span>Alterar somente esta parcela</span>
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="installmentEditOption"
+                        value="future"
+                        checked={installmentEditOption === 'future'}
+                        onChange={() => setInstallmentEditOption('future')}
+                        className="rounded-full border-zinc-700 text-amber-500 focus:ring-amber-500"
+                      />
+                      <span>Alterar esta e as próximas parcelas</span>
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="installmentEditOption"
+                        value="all"
+                        checked={installmentEditOption === 'all'}
+                        onChange={() => setInstallmentEditOption('all')}
+                        className="rounded-full border-zinc-700 text-amber-500 focus:ring-amber-500"
+                      />
+                      <span>Alterar todas as parcelas da compra</span>
+                    </label>
+                  </div>
+
+                  <div className="overflow-x-auto pt-2">
+                    <table className="w-full text-[10px] text-zinc-400 text-left">
+                      <thead>
+                        <tr className="border-b border-zinc-800 text-zinc-500 uppercase tracking-wider font-mono">
+                          <th className="pb-1.5 font-semibold">Parcela</th>
+                          <th className="pb-1.5 font-semibold">Data</th>
+                          <th className="pb-1.5 font-semibold text-right">Valor</th>
+                          <th className="pb-1.5 font-semibold text-right">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-800/50">
+                        {relatedInstallments.map((item) => {
+                          const isCurrent = item.id === modalPrefillData.id;
+                          return (
+                            <tr key={item.id} className={isCurrent ? "text-amber-400 font-bold bg-amber-500/5" : ""}>
+                              <td className="py-1.5">{item.cartaoDetalhes?.parcelaAtual}/{item.cartaoDetalhes?.parcelasTotal}</td>
+                              <td className="py-1.5">{item.data}</td>
+                              <td className="py-1.5 text-right">R$ {item.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                              <td className="py-1.5 text-right font-semibold">
+                                {item.status === 'PAGO' ? 'Paga' : isCurrent ? 'Atual' : 'Futura'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -779,7 +1036,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
               <span className="text-amber-400 font-bold text-[11px] block flex items-center gap-1.5">
                 <Repeat className="w-3.5 h-3.5" /> Parâmetros de Recorrência Fixa
               </span>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                   <label className="text-zinc-400 block mb-1">Frequência da Recorrência</label>
                   <select
@@ -802,6 +1059,18 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                     onChange={(e) => setProximoVencimento(e.target.value)}
                     className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200"
                   />
+                </div>
+
+                <div>
+                  <label className="text-zinc-400 block mb-1">Término do Custo (opcional)</label>
+                  <input
+                    type="date"
+                    min={data}
+                    value={dataTerminoCustoFixo}
+                    onChange={(e) => setDataTerminoCustoFixo(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200"
+                  />
+                  <span className="text-[10px] text-zinc-500 mt-1 block">Ex.: fim do aluguel ou financiamento</span>
                 </div>
               </div>
             </div>
@@ -866,6 +1135,34 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                       onChange={(e) => setNewContract({ ...newContract, taxaJurosAnual: e.target.value })}
                       className="px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 font-mono"
                     />
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="CET mensal (%)"
+                      value={newContract.cetMensal}
+                      onChange={(e) => setNewContract({ ...newContract, cetMensal: e.target.value })}
+                      className="px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 font-mono"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="CET anual (%)"
+                      value={newContract.cetAnual}
+                      onChange={(e) => setNewContract({ ...newContract, cetAnual: e.target.value })}
+                      className="px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 font-mono"
+                    />
+                    <div>
+                      <label className="text-[10px] text-zinc-500 block mb-1">Próximo vencimento</label>
+                      <input
+                        type="date"
+                        required
+                        value={newContract.proximoVencimento}
+                        onChange={(e) => setNewContract({ ...newContract, proximoVencimento: e.target.value })}
+                        className="w-full px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200"
+                      />
+                    </div>
                   </div>
                   <div className="flex justify-end gap-2">
                     <button
@@ -900,6 +1197,9 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                             setValorTotalContrato(String(selected.valorTotal));
                             setParcelasContrato(selected.parcelasTotal);
                             setTaxaJurosAnual(String(selected.taxaJurosAnual));
+                            setCetMensal(String(selected.cetMensal || ''));
+                            setCetAnual(String(selected.cetAnual || ''));
+                            setProximoVencimentoFinanciamento(selected.proximoVencimento || new Date().toISOString().split('T')[0]);
                           }
                         }}
                         className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200 mb-2"
@@ -962,6 +1262,42 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                         step="0.1"
                         value={taxaJurosAnual}
                         onChange={(e) => setTaxaJurosAnual(e.target.value)}
+                        className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200 font-mono"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-zinc-400 block mb-1">CET Mensal (% a.m.)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={cetMensal}
+                        onChange={(e) => setCetMensal(e.target.value)}
+                        placeholder="Ex: 1,17"
+                        className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-zinc-400 block mb-1">CET Anual (% a.a.)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={cetAnual}
+                        onChange={(e) => setCetAnual(e.target.value)}
+                        placeholder="Ex: 14,98"
+                        className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-zinc-400 block mb-1">Próximo Vencimento</label>
+                      <input
+                        type="date"
+                        required
+                        value={proximoVencimentoFinanciamento}
+                        onChange={(e) => setProximoVencimentoFinanciamento(e.target.value)}
                         className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200 font-mono"
                       />
                     </div>

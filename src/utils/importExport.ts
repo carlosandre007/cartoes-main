@@ -37,6 +37,13 @@ const asMoney = (value: unknown): number => {
   return Math.abs(Number.parseFloat(normalized) || 0);
 };
 
+const asSignedMoney = (value: unknown): number => {
+  if (typeof value === 'number') return value;
+  const raw = String(value ?? '').replace(/[^0-9,.-]/g, '');
+  const normalized = raw.includes(',') ? raw.replace(/\./g, '').replace(',', '.') : raw;
+  return Number.parseFloat(normalized) || 0;
+};
+
 export const parseRowsToTransactions = (rows: unknown[][]): Omit<Transaction, 'id'>[] => {
   if (rows.length < 2) return [];
   const headers = rows[0].map(normalize);
@@ -68,6 +75,32 @@ export const parseRowsToTransactions = (rows: unknown[][]): Omit<Transaction, 'i
   });
 };
 
+export interface ImportedCardPurchase {
+  transaction: Omit<Transaction, 'id'>;
+  parcelasRestantes: number;
+}
+
+export const parseRowsToCardPurchases = (rows: unknown[][]): ImportedCardPurchase[] => {
+  if (rows.length < 2) return [];
+  const headers = rows[0].map(normalize);
+  const installmentsIndex = headers.findIndex((header) =>
+    ['parcelasrestantes', 'parcelasfaltantes', 'quantidadedeparcelas', 'parcelas'].includes(header)
+  );
+  const valueIndex = headers.findIndex((header) => aliases.valor.includes(header));
+
+  return rows.slice(1).flatMap((row) => {
+    const parsed = parseRowsToTransactions([rows[0], row]);
+    if (!parsed.length) return [];
+    const rawInstallments = installmentsIndex >= 0 ? Number(row[installmentsIndex]) : 1;
+    const parcelasRestantes = Number.isFinite(rawInstallments)
+      ? Math.min(120, Math.max(1, Math.trunc(rawInstallments)))
+      : 1;
+    const signedValue = valueIndex >= 0 ? asSignedMoney(row[valueIndex]) : parsed[0].valor;
+    if (signedValue === 0) return [];
+    return [{ transaction: { ...parsed[0], valor: signedValue }, parcelasRestantes }];
+  });
+};
+
 const parseCSVRow = (line: string, delimiter: string): string[] => {
   const cells: string[] = [];
   let current = '';
@@ -88,6 +121,13 @@ export const parseCSVToTransactions = (csvText: string): Omit<Transaction, 'id'>
   if (lines.length < 2) return [];
   const delimiter = (lines[0].match(/;/g)?.length || 0) > (lines[0].match(/,/g)?.length || 0) ? ';' : ',';
   return parseRowsToTransactions(lines.map((line) => parseCSVRow(line, delimiter)));
+};
+
+export const parseCSVToCardPurchases = (csvText: string): ImportedCardPurchase[] => {
+  const lines = csvText.replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length < 2) return [];
+  const delimiter = (lines[0].match(/;/g)?.length || 0) > (lines[0].match(/,/g)?.length || 0) ? ';' : ',';
+  return parseRowsToCardPurchases(lines.map((line) => parseCSVRow(line, delimiter)));
 };
 
 const csvCell = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;

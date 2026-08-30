@@ -22,6 +22,8 @@ import { FinancialHealthView } from './views/FinancialHealthView';
 import { QuittatementPlanningView } from './views/QuittatementPlanningView';
 import { ReportsView } from './views/ReportsView';
 import { SettingsView } from './views/SettingsView';
+import { FinancialIntelligenceView } from './views/FinancialIntelligenceView';
+import { Impress3DView } from './views/Impress3DView';
 
 const MainContent: React.FC = () => {
   const { activeView, isNewTransactionOpen, openNewTransactionModal, closeNewTransactionModal } = useFinancial();
@@ -56,8 +58,12 @@ const MainContent: React.FC = () => {
         return <QuittatementPlanningView />;
       case 'relatorios':
         return <ReportsView />;
+      case 'inteligencia':
+        return <FinancialIntelligenceView />;
       case 'configuracoes':
         return <SettingsView />;
+      case 'impress3d':
+        return <Impress3DView />;
       default:
         return <DashboardView />;
     }

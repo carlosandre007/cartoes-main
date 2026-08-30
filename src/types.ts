@@ -1,6 +1,6 @@
 export type TransactionType = 'RECEITA' | 'DESPESA';
 
-export type TransactionStatus = 'PAGO' | 'PENDENTE' | 'AGENDADO' | 'AGUARDANDO';
+export type TransactionStatus = 'PAGO' | 'PENDENTE' | 'AGENDADO' | 'AGUARDANDO' | 'CANCELADO';
 
 export type OrigemFinanceira =
   | 'CONTA_BANCARIA'
@@ -23,11 +23,18 @@ export interface CartaoDetalhes {
   parcelasTotal?: number;
   melhorDiaCompra?: number;
   diaVencimento?: number;
+  dataCompra?: string;
+  competenciaFatura?: string;
+  competenciaDefinidaEmLote?: boolean;
+  recorrente?: boolean;
+  recorrenciaId?: string;
+  recorrenciaAtiva?: boolean;
 }
 
 export interface CustoFixoDetalhes {
   recorrencia: RecorrenciaTipo;
   proximoVencimento: string; // ISO string YYYY-MM-DD
+  dataTermino?: string; // ISO string YYYY-MM-DD
   ativo: boolean;
 }
 
@@ -37,6 +44,9 @@ export interface FinanciamentoDetalhes {
   parcelasTotal: number;
   parcelaAtual: number;
   taxaJurosAnual: number;
+  cetMensal?: number;
+  cetAnual?: number;
+  proximoVencimento?: string;
   contratoId: string;
 }
 
@@ -87,6 +97,8 @@ export interface CreditContract {
   parcelasPagas: number;
   valorParcelaMensal: number;
   taxaJurosAnual: number;
+  cetMensal?: number;
+  cetAnual?: number;
   proximoVencimento: string;
   categoria: string;
   status: 'EM_DIA' | 'ATRASADO' | 'LIQUIDADO';
@@ -134,4 +146,6 @@ export type ViewTab =
   | 'saude'
   | 'quitacao'
   | 'relatorios'
-  | 'configuracoes';
+  | 'inteligencia'
+  | 'configuracoes'
+  | 'impress3d';

@@ -17,8 +17,14 @@ import {
   ChevronRight,
   Edit2,
   Trash2,
+  BrainCircuit,
+  BarChart3,
+  Building2,
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
+import { getMonthlyCommitments } from '../utils/monthlyCommitments';
+import { getCanonicalTransactions, getConsolidatedFlowItems, getTotalOpenCardDebt, getTotalFinancingDebt, getTotalFixedCostDebt } from '../utils/financialCalculations';
+import { buildFinancialIntelligenceSummary, generateLocalFinancialAnalysis, parseFinancialNumber } from '../utils/financialIntelligence';
 
 export const DashboardView: React.FC = () => {
   const {
@@ -31,10 +37,30 @@ export const DashboardView: React.FC = () => {
     openNewTransactionModal,
     openPayContractModal,
     toggleTransactionStatus,
+    payCardInvoice,
     addGoal,
     updateGoal,
     deleteGoal,
   } = useFinancial();
+
+  const [companyRevenueByMonth, setCompanyRevenueByMonth] = React.useState<Record<string, number>>(() => {
+    try { return JSON.parse(localStorage.getItem('aureum_company_revenue_by_month') || '{}'); }
+    catch { return {}; }
+  });
+
+  React.useEffect(() => {
+    localStorage.setItem('aureum_company_revenue_by_month', JSON.stringify(companyRevenueByMonth));
+  }, [companyRevenueByMonth]);
+
+  const handleAddCompanyRevenue = () => {
+    const month = prompt('Competência do faturamento (AAAA-MM):', new Date().toISOString().slice(0, 7))?.trim();
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) { alert('Informe a competência no formato AAAA-MM.'); return; }
+    const informed = prompt('Faturamento total da empresa no mês (R$):', String(companyRevenueByMonth[month] || 0));
+    if (informed === null) return;
+    const value = parseFinancialNumber(informed);
+    if (!Number.isFinite(value) || value <= 0) { alert('Informe um faturamento maior que zero.'); return; }
+    setCompanyRevenueByMonth((previous) => ({ ...previous, [month]: value }));
+  };
 
   const handleAddGoal = () => {
     const titulo = prompt('Título da meta:')?.trim();
@@ -57,6 +83,17 @@ export const DashboardView: React.FC = () => {
     if (Number.isFinite(value) && value >= 0) updateGoal(id, { valorAtual: value });
   };
 
+  const handleFinancialAnalysis = () => {
+    const suggestedBalance = bankAccounts.reduce((sum, account) => sum + account.saldo, 0);
+    const informed = prompt('Informe seu saldo atual para a análise (R$):', suggestedBalance.toFixed(2));
+    if (informed === null) return;
+    const value = parseFinancialNumber(informed);
+    if (!Number.isFinite(value)) { alert('Informe um saldo válido.'); return; }
+    sessionStorage.setItem('aureum_ai_balance', String(value));
+    sessionStorage.setItem('aureum_ai_request', '1');
+    setActiveView('inteligencia');
+  };
+
   // Calculate totals
   const totalBankBalance = bankAccounts.reduce((acc, b) => acc + b.saldo, 0);
 
@@ -64,7 +101,9 @@ export const DashboardView: React.FC = () => {
   const now = new Date();
   const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-  const currentMonthTxs = transactions.filter((tx) => tx.data.startsWith(currentMonthStr));
+  const canonicalTransactions = getCanonicalTransactions(transactions);
+  const consolidatedFlow = getConsolidatedFlowItems(canonicalTransactions, cards);
+  const currentMonthTxs = consolidatedFlow.filter((tx) => tx.data.startsWith(currentMonthStr));
 
   const totalReceitasMes = currentMonthTxs
     .filter((tx) => tx.tipo === 'RECEITA' && tx.status === 'PAGO')
@@ -74,34 +113,78 @@ export const DashboardView: React.FC = () => {
     .filter((tx) => tx.tipo === 'DESPESA' && tx.status === 'PAGO')
     .reduce((acc, tx) => acc + tx.valor, 0);
 
+  const totalDespesasPendentesMes = currentMonthTxs
+    .filter((tx) => tx.tipo === 'DESPESA' && tx.status !== 'PAGO')
+    .reduce((acc, tx) => acc + tx.valor, 0);
+
   const resultadoLiquidoMes = totalReceitasMes - totalDespesasMes;
 
   // Debt statistics
-  const totalDividaContratos = contracts.reduce((acc, c) => acc + c.valorRestante, 0);
-  const totalDividaCartoes = cards.reduce((acc, c) => acc + c.limiteUtilizado, 0);
+  const totalDividaContratos = getTotalFinancingDebt(canonicalTransactions, contracts);
+  // Mantém o Dashboard consistente com a tela de Cartões: considera todas as
+  // faturas e parcelas abertas, não apenas a competência do mês atual.
+  const totalDividaCartoes = getTotalOpenCardDebt(canonicalTransactions, cards);
   const dividaTotal = totalDividaContratos + totalDividaCartoes;
+  const totalLimiteUtilizadoCartoes = totalDividaCartoes;
+  const totalDividaCustosFixos = getTotalFixedCostDebt(canonicalTransactions, now);
+  const totalDebitosUnificado = totalLimiteUtilizadoCartoes + totalDividaContratos + totalDividaCustosFixos;
+  const faturamentoEmpresaMes = companyRevenueByMonth[currentMonthStr] || 0;
 
   const totalValorPagoContratos = contracts.reduce((acc, c) => acc + c.valorPago, 0);
   const valorTotalContratos = contracts.reduce((acc, c) => acc + c.valorTotal, 0);
 
   const currentMonthLabel = now.toLocaleDateString('pt-BR', { month: 'long' });
-  const monthlyChart = Array.from({ length: 4 }, (_, index) => {
-    const date = new Date(now.getFullYear(), now.getMonth() - (3 - index), 1);
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-    const monthTransactions = transactions.filter((tx) => tx.data.startsWith(key));
+  const futureMonthKeys = Array.from(new Set([
+    currentMonthStr,
+    ...consolidatedFlow.filter((tx) => tx.data.slice(0, 7) >= currentMonthStr).map((tx) => tx.data.slice(0, 7)),
+  ])).sort().slice(0, 6);
+  const monthlyChart = futureMonthKeys.map((key) => {
+    const [year, month] = key.split('-').map(Number);
+    const date = new Date(year, month - 1, 1);
+    const monthTransactions = consolidatedFlow.filter(
+      (tx) => tx.data.startsWith(key) && (tx.origemFinanceira !== 'CUSTO_FIXO' || key === currentMonthStr)
+    );
     return {
       mes: date.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }),
-      receita: monthTransactions.filter((tx) => tx.tipo === 'RECEITA' && tx.status === 'PAGO').reduce((sum, tx) => sum + tx.valor, 0),
-      despesa: monthTransactions.filter((tx) => tx.tipo === 'DESPESA' && tx.status === 'PAGO').reduce((sum, tx) => sum + tx.valor, 0),
+      receita: monthTransactions.filter((tx) => tx.tipo === 'RECEITA').reduce((sum, tx) => sum + tx.valor, 0),
+      despesa: monthTransactions.filter((tx) => tx.tipo === 'DESPESA').reduce((sum, tx) => sum + tx.valor, 0),
     };
   });
   const chartMax = Math.max(1, ...monthlyChart.flatMap((month) => [month.receita, month.despesa]));
+  const debtEvolution = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date(now.getFullYear(), now.getMonth() - 5 + index, 1);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const total = consolidatedFlow
+      .filter((tx) => tx.tipo === 'DESPESA' && tx.status !== 'CANCELADO' && tx.data.startsWith(key))
+      .filter((tx) => tx.origemFinanceira !== 'CUSTO_FIXO' || key === currentMonthStr)
+      .reduce((sum, tx) => sum + tx.valor, 0);
+    return { key, label: date.toLocaleDateString('pt-BR', { month: 'short' }), total };
+  });
+  const debtEvolutionMax = Math.max(1, ...debtEvolution.map((item) => item.total));
+  const previousMonthDebt = debtEvolution.at(-2)?.total || 0;
+  const currentMonthDebt = debtEvolution.at(-1)?.total || 0;
+  const debtTrend = currentMonthDebt - previousMonthDebt;
 
   // Upcoming due dates (next pending despesas)
-  const proximosVencimentos = transactions
-    .filter((tx) => tx.tipo === 'DESPESA' && tx.status !== 'PAGO')
-    .sort((a, b) => new Date(a.data).getTime() - new Date(b.data).getTime())
-    .slice(0, 5);
+  const proximosVencimentos = getMonthlyCommitments(canonicalTransactions, cards, now).slice(0, 5);
+
+  const limiteAlertaCustoFixo = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 3);
+  const alertasCustosFixos = transactions
+    .filter(
+      (tx) =>
+        tx.origemFinanceira === 'CUSTO_FIXO' &&
+        tx.tipo === 'DESPESA' &&
+        tx.status !== 'PAGO'
+    )
+    .filter((tx) => {
+      const vencimento = new Date(`${tx.data}T00:00:00`);
+      return !Number.isNaN(vencimento.getTime()) && vencimento <= limiteAlertaCustoFixo;
+    })
+    .sort((a, b) => a.data.localeCompare(b.data));
+
+  const dailyConsultant = React.useMemo(() => generateLocalFinancialAnalysis(buildFinancialIntelligenceSummary({
+    transactions, cards, contracts, bankAccounts, goals, currentBalanceInformed: totalBankBalance,
+  })), [transactions, cards, contracts, bankAccounts, goals, totalBankBalance]);
 
   return (
     <div className="p-6 space-y-6 text-zinc-100 font-sans">
@@ -123,6 +206,13 @@ export const DashboardView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-3 w-full md:w-auto">
+          <button
+            onClick={handleFinancialAnalysis}
+            className="flex-1 md:flex-none px-4 py-2.5 bg-zinc-900 hover:bg-zinc-800 border border-violet-500/30 text-violet-300 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer"
+          >
+            <BrainCircuit className="w-4 h-4" />
+            <span>Analisar Minha Situação Financeira</span>
+          </button>
           <button
             onClick={() => openNewTransactionModal()}
             className="flex-1 md:flex-none px-4 py-2.5 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-extrabold text-xs rounded-xl shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer"
@@ -170,7 +260,7 @@ export const DashboardView: React.FC = () => {
           <div className="text-xl font-black font-mono text-emerald-400">
             R$ {totalReceitasMes.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
           </div>
-          <div className="text-[11px] text-zinc-400">Total registrado no fluxo central</div>
+          <div className="text-[11px] text-zinc-400">Total recebido e realizado no mês</div>
         </div>
 
         {/* Despesas do Mês */}
@@ -184,7 +274,9 @@ export const DashboardView: React.FC = () => {
           <div className="text-xl font-black font-mono text-amber-400">
             R$ {totalDespesasMes.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
           </div>
-          <div className="text-[11px] text-zinc-400">Total registrado no fluxo central</div>
+          <div className="text-[11px] text-zinc-400">
+            Realizado • Pendente: R$ {totalDespesasPendentesMes.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+          </div>
         </div>
 
         {/* Dívida Total Restante */}
@@ -204,6 +296,67 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
+      <div className="p-6 rounded-2xl bg-gradient-to-r from-violet-950/30 via-zinc-950 to-amber-950/20 border border-violet-500/25 shadow-xl space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2"><BrainCircuit className="w-4 h-4 text-violet-400" /> Consultor Financeiro Diário</h3>
+            <p className="text-[11px] text-zinc-400">Calculado localmente e atualizado automaticamente com seus dados reais.</p>
+          </div>
+          <button onClick={() => setActiveView('inteligencia')} className="px-3 py-2 rounded-xl border border-violet-500/30 bg-violet-500/10 text-violet-300 text-xs font-bold cursor-pointer">Abrir análise completa</button>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          <div className="p-3 rounded-xl bg-zinc-900/70 border border-zinc-800"><span className="text-[10px] text-zinc-500 block">Saúde financeira</span><strong className="text-lg text-amber-400">{dailyConsultant.score}/100</strong><span className="text-[10px] text-zinc-400 block">{dailyConsultant.classification}</span></div>
+          <div className="p-3 rounded-xl bg-zinc-900/70 border border-zinc-800"><span className="text-[10px] text-zinc-500 block">Prioridade do dia</span><p className="text-xs text-zinc-200 mt-1">{dailyConsultant.priority}</p></div>
+          <div className="p-3 rounded-xl bg-zinc-900/70 border border-red-500/20"><span className="text-[10px] text-red-400 block">Principal alerta</span><p className="text-xs text-zinc-200 mt-1">{dailyConsultant.alert}</p></div>
+          <div className="p-3 rounded-xl bg-zinc-900/70 border border-emerald-500/20"><span className="text-[10px] text-emerald-400 block">Melhor oportunidade</span><p className="text-xs text-zinc-200 mt-1">{dailyConsultant.opportunity}</p></div>
+          <div className="p-3 rounded-xl bg-zinc-900/70 border border-amber-500/20"><span className="text-[10px] text-amber-400 block">Vencimento crítico</span><p className="text-xs text-zinc-200 mt-1">{dailyConsultant.nextCriticalDue}</p></div>
+        </div>
+      </div>
+
+      {/* Unified debt center */}
+      <div className="p-6 rounded-2xl bg-zinc-950/90 border border-red-500/25 shadow-xl space-y-5">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2"><BarChart3 className="w-4 h-4 text-red-400" /> Central Unificada de Débitos</h3>
+            <p className="text-xs text-zinc-400">Cartões utilizados, saldo dos financiamentos e custos fixos. Quando há data de término, todas as parcelas devidas até o fim entram no total. O faturamento é apenas informativo.</p>
+          </div>
+          <button onClick={handleAddCompanyRevenue} className="px-4 py-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-bold text-xs rounded-xl flex items-center justify-center gap-2 cursor-pointer">
+            <Building2 className="w-4 h-4" /> Adicionar/atualizar faturamento
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          {[
+            ['Limite utilizado dos cartões', totalLimiteUtilizadoCartoes, 'text-amber-400'],
+            ['Financiamentos a quitar', totalDividaContratos, 'text-red-400'],
+            ['Dívida de custos fixos', totalDividaCustosFixos, 'text-orange-400'],
+            ['Faturamento da empresa', faturamentoEmpresaMes, 'text-emerald-400'],
+            ['Total unificado de débitos', totalDebitosUnificado, 'text-red-300'],
+          ].map(([label, value, color]) => (
+            <div key={String(label)} className="p-4 rounded-xl bg-zinc-900/70 border border-zinc-800">
+              <span className="text-[10px] text-zinc-400 block min-h-8">{label}</span>
+              <strong className={`text-base font-black font-mono ${color}`}>R$ {(value as number).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-zinc-200">Evolução mensal dos débitos</span>
+            <span className={debtTrend <= 0 ? 'text-emerald-400' : 'text-red-400'}>{debtTrend <= 0 ? 'Diminuiu' : 'Aumentou'} R$ {Math.abs(debtTrend).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} em relação ao mês anterior</span>
+          </div>
+          <div className="grid grid-cols-6 gap-2 h-36 items-end">
+            {debtEvolution.map((item) => (
+              <div key={item.key} className="h-full flex flex-col justify-end items-center gap-1 min-w-0">
+                <span className="text-[9px] text-zinc-400 font-mono truncate w-full text-center">R$ {item.total.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</span>
+                <div style={{ height: `${Math.max(item.total ? 8 : 2, (item.total / debtEvolutionMax) * 100)}%` }} className="w-full max-w-12 rounded-t-md bg-gradient-to-t from-red-700 to-amber-500" />
+                <span className="text-[10px] text-zinc-500 uppercase">{item.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {/* Main Grid: Charts & Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left 2 columns: Cash Flow & Debt Progress */}
@@ -216,7 +369,7 @@ export const DashboardView: React.FC = () => {
                   Fluxo Financeiro Consolidado
                 </h3>
                 <p className="text-xs text-zinc-400">
-                  Comparativo de entradas vs saídas gravadas no fluxo central
+                  Entradas e saídas previstas do mês atual em diante
                 </p>
               </div>
               <button
@@ -342,6 +495,32 @@ export const DashboardView: React.FC = () => {
 
         {/* Right column: Próximos Vencimentos & Goals */}
         <div className="space-y-6">
+          {alertasCustosFixos.length > 0 && (
+            <div className="p-5 rounded-2xl bg-red-950/30 border border-red-500/40 shadow-xl space-y-3">
+              <h3 className="text-sm font-bold text-red-300 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4" />
+                Alerta de Custos Fixos
+              </h3>
+              <p className="text-[11px] text-zinc-400">Vencidos ou com vencimento nos próximos 3 dias.</p>
+              <div className="space-y-2">
+                {alertasCustosFixos.map((tx) => (
+                  <div key={tx.id} className="p-3 rounded-xl bg-zinc-950/70 border border-red-500/20 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-zinc-100 truncate">{tx.descricao}</div>
+                      <div className="text-[10px] text-red-300 font-mono">Vence: {tx.data}</div>
+                    </div>
+                    <button
+                      onClick={() => toggleTransactionStatus(tx.id)}
+                      className="shrink-0 px-2.5 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold"
+                    >
+                      Pago
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Próximos Vencimentos */}
           <div className="p-6 rounded-2xl bg-zinc-950/90 border border-amber-500/20 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
@@ -370,23 +549,32 @@ export const DashboardView: React.FC = () => {
                   >
                     <div>
                       <div className="text-xs font-semibold text-zinc-200 line-clamp-1">
-                        {tx.descricao}
+                        {tx.kind === 'CARD_INVOICE' ? `Cartão ${tx.title}` : tx.title}
                       </div>
                       <div className="text-[10px] text-zinc-400 font-mono">
-                        Vence: <span className="text-amber-400">{tx.data}</span> • {tx.categoria}
+                        Vence: <span className="text-amber-400">{tx.date}</span> • {tx.category}
                       </div>
                     </div>
 
                     <div className="text-right shrink-0">
                       <div className="text-xs font-bold font-mono text-amber-400">
-                        R$ {tx.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        R$ {tx.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                       </div>
-                      <button
-                        onClick={() => toggleTransactionStatus(tx.id)}
-                        className="text-[10px] text-emerald-400 hover:underline font-semibold"
-                      >
-                        Marcar Pago
-                      </button>
+                      {tx.transactionId ? (
+                        <button
+                          onClick={() => toggleTransactionStatus(tx.transactionId!)}
+                          className="text-[10px] text-emerald-400 hover:underline font-semibold"
+                        >
+                          Marcar Pago
+                        </button>
+                      ) : tx.cardId ? (
+                        <button
+                          onClick={() => payCardInvoice(tx.cardId!)}
+                          className="text-[10px] text-emerald-400 hover:underline font-semibold"
+                        >
+                          Marcar Pago
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 ))

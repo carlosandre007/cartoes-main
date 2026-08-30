@@ -25,6 +25,7 @@ import {
 import { useFinancial } from '../context/FinancialContext';
 import { TransactionType, TransactionStatus, OrigemFinanceira } from '../types';
 import { parseCSVToTransactions, parseRowsToTransactions, exportTransactionsToCSV, downloadCSVFile } from '../utils/importExport';
+import { getConsolidatedFlowItems } from '../utils/financialCalculations';
 
 export const FinancialFlowView: React.FC = () => {
   const {
@@ -35,6 +36,7 @@ export const FinancialFlowView: React.FC = () => {
     openNewTransactionModal,
     searchQuery,
     setSearchQuery,
+    cards,
   } = useFinancial();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -44,13 +46,20 @@ export const FinancialFlowView: React.FC = () => {
   const [filterOrigem, setFilterOrigem] = useState<string>('TODOS');
   const [filterStatus, setFilterStatus] = useState<string>('TODOS');
   const [filterCategoria, setFilterCategoria] = useState<string>('TODAS');
+  const [filterCompetence, setFilterCompetence] = useState<string>(() => new Date().toISOString().slice(0, 7));
 
   // Pagination
   const [currentPage, setCurrentPage] = useState<number>(1);
   const itemsPerPage = 12;
 
   // Filter transactions
-  const filteredTransactions = transactions.filter((tx) => {
+  const now = new Date();
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  const currentAndFutureTransactions = getConsolidatedFlowItems(transactions, cards)
+    .filter((tx) => tx.data >= currentMonthStart)
+    .filter((tx) => tx.origemFinanceira !== 'CUSTO_FIXO' || tx.data.startsWith(currentMonthKey));
+  const filteredTransactions = currentAndFutureTransactions.filter((tx) => {
     // Search query
     const matchesSearch =
       !searchQuery ||
@@ -70,8 +79,9 @@ export const FinancialFlowView: React.FC = () => {
 
     // Categoria
     const matchesCategoria = filterCategoria === 'TODAS' || tx.categoria === filterCategoria;
+    const matchesCompetence = filterCompetence === 'TODOS_FUTUROS' || tx.data.startsWith(filterCompetence);
 
-    return matchesSearch && matchesTipo && matchesOrigem && matchesStatus && matchesCategoria;
+    return matchesSearch && matchesTipo && matchesOrigem && matchesStatus && matchesCategoria && matchesCompetence;
   });
 
   // Totals for filtered data
@@ -143,7 +153,7 @@ export const FinancialFlowView: React.FC = () => {
             Fluxo Financeiro Aureum
           </h2>
           <p className="text-xs text-zinc-400">
-            {filteredTransactions.length} lançamentos gravados no fluxo principal
+            {filteredTransactions.length} lançamentos {filterCompetence === 'TODOS_FUTUROS' ? 'do mês atual em diante' : `na competência ${filterCompetence}`}
           </p>
         </div>
 
@@ -234,7 +244,7 @@ export const FinancialFlowView: React.FC = () => {
           <Filter className="w-4 h-4" /> Filtros Avançados do Fluxo
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3 text-xs">
           {/* Search */}
           <div>
             <label className="text-zinc-400 block mb-1">Buscar por texto</label>
@@ -247,6 +257,25 @@ export const FinancialFlowView: React.FC = () => {
                 placeholder="Descrição, empresa..."
                 className="w-full pl-8 pr-2 py-1.5 bg-zinc-900 border border-zinc-800 rounded-xl text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-amber-500/40"
               />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-zinc-400 block mb-1">Competência</label>
+            <div className="flex gap-1">
+              <input
+                type="month"
+                value={filterCompetence === 'TODOS_FUTUROS' ? '' : filterCompetence}
+                onChange={(e) => { setFilterCompetence(e.target.value || new Date().toISOString().slice(0, 7)); setCurrentPage(1); }}
+                className="min-w-0 w-full px-2 py-1.5 bg-zinc-900 border border-zinc-800 rounded-xl text-zinc-200 font-mono"
+              />
+              <button
+                onClick={() => { setFilterCompetence('TODOS_FUTUROS'); setCurrentPage(1); }}
+                className={`px-2 py-1.5 rounded-xl border text-[9px] font-bold cursor-pointer ${filterCompetence === 'TODOS_FUTUROS' ? 'bg-amber-500 border-amber-400 text-zinc-950' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}
+                title="Mostrar mês atual e todos os meses futuros"
+              >
+                FUTURO
+              </button>
             </div>
           </div>
 
@@ -301,7 +330,7 @@ export const FinancialFlowView: React.FC = () => {
               }}
               className="w-full px-2.5 py-1.5 bg-zinc-900 border border-zinc-800 rounded-xl text-zinc-200"
             >
-              <option value="TODOS">Todos os Status</option>
+              <option value="TODOS">Todos os status</option>
               <option value="PAGO">Pago / Liquidado</option>
               <option value="PENDENTE">Pendente</option>
               <option value="AGENDADO">Agendado</option>
@@ -367,18 +396,32 @@ export const FinancialFlowView: React.FC = () => {
                     >
                       {/* Status badge toggle */}
                       <td className="p-3.5 pl-5">
+                        {tx.isCardInvoice ? (
+                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-bold inline-flex items-center gap-1 ${
+                            isPaid
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                          }`}>
+                            {isPaid ? <CheckCircle className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+                            {isPaid ? 'Fatura fechada' : 'Fatura aberta'}
+                          </span>
+                        ) : (
                         <button
-                          onClick={() => toggleTransactionStatus(tx.id)}
+                          onClick={() => {
+                            if (confirm(`Reverter o pagamento de "${tx.descricao}" e retornar o lançamento para pendente?`)) {
+                              toggleTransactionStatus(tx.id);
+                            }
+                          }}
                           className={`px-2.5 py-1 rounded-full text-[10px] font-mono font-bold flex items-center gap-1 transition-all cursor-pointer ${
                             isPaid
                               ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                               : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
                           }`}
-                          title="Clique para alternar o status"
+                          title="Reverter pagamento e retornar para pendente"
                         >
                           {isPaid ? (
                             <>
-                              <CheckCircle className="w-3 h-3" /> Liquidado
+                              <CheckCircle className="w-3 h-3" /> Pago • Reverter
                             </>
                           ) : (
                             <>
@@ -386,6 +429,7 @@ export const FinancialFlowView: React.FC = () => {
                             </>
                           )}
                         </button>
+                        )}
                       </td>
 
                       {/* Data */}
@@ -394,7 +438,7 @@ export const FinancialFlowView: React.FC = () => {
                       {/* Descrição */}
                       <td className="p-3.5 font-medium text-zinc-100 max-w-xs">
                         <div className="truncate font-sans">{tx.descricao}</div>
-                        {tx.cartaoDetalhes?.parcelasTotal && (
+                        {!tx.isCardInvoice && tx.cartaoDetalhes?.parcelasTotal && (
                           <span className="text-[10px] text-amber-400 font-mono block">
                             Parc. {tx.cartaoDetalhes.parcelaAtual}/{tx.cartaoDetalhes.parcelasTotal}
                           </span>
@@ -434,6 +478,9 @@ export const FinancialFlowView: React.FC = () => {
 
                       {/* Actions */}
                       <td className="p-3.5 text-center pr-5">
+                        {tx.isCardInvoice ? (
+                          <span className="text-[10px] text-zinc-500">Consolidada</span>
+                        ) : (
                         <div className="flex items-center justify-center gap-1 opacity-80 group-hover:opacity-100">
                           <button
                             onClick={() =>
@@ -456,6 +503,7 @@ export const FinancialFlowView: React.FC = () => {
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
+                        )}
                       </td>
                     </tr>
                   );

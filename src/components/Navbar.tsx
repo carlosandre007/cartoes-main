@@ -58,9 +58,17 @@ const viewTitles: Record<ViewTab, { title: string; subtitle: string }> = {
     title: 'Relatórios & Business Intelligence',
     subtitle: 'Análise gráfica, evolução de patrimônio e exportação de relatórios em PDF/CSV',
   },
+  inteligencia: {
+    title: 'Central de Inteligência Financeira',
+    subtitle: 'Diagnóstico financeiro por IA executado exclusivamente sob sua solicitação',
+  },
   configuracoes: {
     title: 'Configurações do Sistema',
     subtitle: 'Preferências de interface, segurança, conexões Open Finance e perfil',
+  },
+  impress3d: {
+    title: 'IMPRESS 3D',
+    subtitle: 'Controle financeiro e gestão do negócio',
   },
 };
 
@@ -72,6 +80,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenNotifications }) => {
   const { user, profile } = useAuth();
   const {
     activeView,
+    setActiveView,
     searchQuery,
     setSearchQuery,
     isDarkMode,
@@ -169,11 +178,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenNotifications }) => {
         </button>
 
         {/* User Badge */}
-        <div className="flex items-center gap-2 pl-1.5 sm:pl-2 border-l border-zinc-800">
+        <button onClick={() => setActiveView('configuracoes')} className="flex items-center gap-2 pl-1.5 sm:pl-2 border-l border-zinc-800 cursor-pointer" title="Abrir meu perfil">
           <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-600 via-amber-400 to-amber-200 p-0.5 shadow-md shrink-0">
-            <div className="w-full h-full bg-zinc-950 rounded-full flex items-center justify-center">
-              <User className="w-4 h-4 text-amber-400" />
-            </div>
+            {profile?.avatarUrl ? <img src={profile.avatarUrl} alt="Foto de perfil" className="w-full h-full rounded-full object-cover bg-zinc-950" /> : <div className="w-full h-full bg-zinc-950 rounded-full flex items-center justify-center"><User className="w-4 h-4 text-amber-400" /></div>}
           </div>
           <div className="hidden xl:block text-left">
             <div className="text-xs font-bold text-zinc-200 leading-tight font-sans">
@@ -183,7 +190,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenNotifications }) => {
               <ShieldCheck className="w-2.5 h-2.5" /> Sessão protegida
             </div>
           </div>
-        </div>
+        </button>
       </div>
     </header>
   );

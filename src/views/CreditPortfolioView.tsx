@@ -10,11 +10,13 @@ import {
   Percent,
   Edit2,
   Trash2,
+  ReceiptText,
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
+import { calculateContractPayoffEstimate } from '../utils/financialCalculations';
 
 export const CreditPortfolioView: React.FC = () => {
-  const { contracts, openPayContractModal, openNewTransactionModal, addContract, updateContract, deleteContract } = useFinancial();
+  const { contracts, openPayContractModal, openNewTransactionModal, addContract, updateContract, deleteContractWithTransactions } = useFinancial();
   const [isAddContractOpen, setIsAddContractOpen] = React.useState(false);
   const [newContractForm, setNewContractForm] = React.useState({
     titulo: '',
@@ -24,6 +26,9 @@ export const CreditPortfolioView: React.FC = () => {
     parcelasTotal: 24,
     valorParcelaMensal: '4500',
     taxaJurosAnual: '9.5',
+    cetMensal: '',
+    cetAnual: '',
+    proximoVencimento: new Date().toISOString().split('T')[0],
     categoria: 'Financiamento Imobiliário',
   });
 
@@ -46,7 +51,9 @@ export const CreditPortfolioView: React.FC = () => {
       parcelasPagas: 0,
       valorParcelaMensal: parseFloat(newContractForm.valorParcelaMensal) || valTotal / pTotal,
       taxaJurosAnual: parseFloat(newContractForm.taxaJurosAnual) || 0,
-      proximoVencimento: new Date().toISOString().split('T')[0],
+      cetMensal: parseFloat(newContractForm.cetMensal) || 0,
+      cetAnual: parseFloat(newContractForm.cetAnual) || 0,
+      proximoVencimento: newContractForm.proximoVencimento,
       categoria: newContractForm.categoria,
       status: 'EM_DIA',
     });
@@ -59,6 +66,9 @@ export const CreditPortfolioView: React.FC = () => {
       parcelasTotal: 24,
       valorParcelaMensal: '4500',
       taxaJurosAnual: '9.5',
+      cetMensal: '',
+      cetAnual: '',
+      proximoVencimento: new Date().toISOString().split('T')[0],
       categoria: 'Financiamento Imobiliário',
     });
   };
@@ -70,7 +80,34 @@ export const CreditPortfolioView: React.FC = () => {
     if (!titulo) return;
     const taxa = Number(prompt('Taxa anual (%):', String(contract.taxaJurosAnual))?.replace(',', '.'));
     if (!Number.isFinite(taxa) || taxa < 0) return;
-    updateContract(contractId, { titulo, taxaJurosAnual: taxa });
+    const cetMensal = Number(prompt('CET mensal (%):', String(contract.cetMensal || 0))?.replace(',', '.'));
+    const cetAnual = Number(prompt('CET anual (%):', String(contract.cetAnual || 0))?.replace(',', '.'));
+    const proximoVencimento = prompt('Próximo vencimento (AAAA-MM-DD):', contract.proximoVencimento)?.trim();
+    if (!Number.isFinite(cetMensal) || cetMensal < 0 || !Number.isFinite(cetAnual) || cetAnual < 0 || !proximoVencimento) return;
+    updateContract(contractId, { titulo, taxaJurosAnual: taxa, cetMensal, cetAnual, proximoVencimento });
+  };
+
+  const handleEstimatePayoff = (contractId: string) => {
+    const contract = contracts.find((item) => item.id === contractId);
+    if (!contract) return;
+    const estimate = calculateContractPayoffEstimate(contract);
+    const money = (value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    alert(
+      `Estimativa de quitação — ${contract.titulo}\n\n`
+      + `Parcelas restantes: ${estimate.remainingInstallments}\n`
+      + `Total das parcelas restantes: ${money(estimate.contractualRemainingAmount)}\n`
+      + `Quitação estimada hoje: ${money(estimate.estimatedPayoffAmount)}\n`
+      + `Possível desconto de juros: ${money(estimate.estimatedInterestDiscount)}\n\n`
+      + `Estimativa calculada pelo ${contract.cetMensal || contract.cetAnual ? `CET cadastrado (${contract.cetMensal || 0}% a.m. / ${contract.cetAnual || 0}% a.a.)` : `juro cadastrado (${contract.taxaJurosAnual}% a.a.)`}. O valor oficial deve ser solicitado à instituição financeira.`
+    );
+  };
+
+  const handleDeleteContractCompletely = async (contractId: string) => {
+    const contract = contracts.find((item) => item.id === contractId);
+    if (!contract) return;
+    if (!confirm(`Excluir "${contract.titulo}" e TODAS as parcelas e lançamentos vinculados? Esta ação serve para refazer o financiamento do zero.`)) return;
+    const deleted = await deleteContractWithTransactions(contractId);
+    if (!deleted) alert('Não foi possível excluir completamente o contrato. Nenhum dado local foi removido.');
   };
 
   const totalEmprestado = contracts.reduce((acc, c) => acc + c.valorTotal, 0);
@@ -164,6 +201,28 @@ export const CreditPortfolioView: React.FC = () => {
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
+                  <label className="text-xs text-zinc-400 block mb-1">Valor da parcela (R$)</label>
+                  <input type="number" min="0" step="0.01" value={newContractForm.valorParcelaMensal} onChange={(e) => setNewContractForm({ ...newContractForm, valorParcelaMensal: e.target.value })} className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-100 font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs text-zinc-400 block mb-1">Taxa de juros anual (%)</label>
+                  <input type="number" min="0" step="0.01" value={newContractForm.taxaJurosAnual} onChange={(e) => setNewContractForm({ ...newContractForm, taxaJurosAnual: e.target.value })} className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-100 font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs text-zinc-400 block mb-1">CET mensal (%)</label>
+                  <input type="number" min="0" step="0.01" value={newContractForm.cetMensal} onChange={(e) => setNewContractForm({ ...newContractForm, cetMensal: e.target.value })} className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-100 font-mono" />
+                </div>
+                <div>
+                  <label className="text-xs text-zinc-400 block mb-1">CET anual (%)</label>
+                  <input type="number" min="0" step="0.01" value={newContractForm.cetAnual} onChange={(e) => setNewContractForm({ ...newContractForm, cetAnual: e.target.value })} className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-100 font-mono" />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-zinc-400 block mb-1">Próximo vencimento</label>
+                <input type="date" required value={newContractForm.proximoVencimento} onChange={(e) => setNewContractForm({ ...newContractForm, proximoVencimento: e.target.value })} className="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-100" />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
                   <label className="text-xs text-zinc-400 block mb-1">Valor Total (R$)</label>
                   <input
                     type="number"
@@ -254,10 +313,11 @@ export const CreditPortfolioView: React.FC = () => {
                 <div className="text-right font-mono">
                   <div className="flex justify-end gap-2 mb-1">
                     <button onClick={() => handleEditContract(contract.id)} className="text-zinc-500 hover:text-amber-400" title="Editar contrato"><Edit2 className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => confirm('Excluir este contrato? Os lançamentos vinculados serão preservados.') && deleteContract(contract.id)} className="text-zinc-500 hover:text-red-400" title="Excluir contrato"><Trash2 className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleDeleteContractCompletely(contract.id)} className="text-zinc-500 hover:text-red-400" title="Excluir contrato e todas as parcelas"><Trash2 className="w-3.5 h-3.5" /></button>
                   </div>
                   <span className="text-[10px] text-zinc-400 block">Taxa de Juros</span>
                   <span className="text-amber-400 font-bold text-sm">{contract.taxaJurosAnual}% a.a.</span>
+                  {(contract.cetAnual || contract.cetMensal) ? <span className="text-[10px] text-zinc-400 block mt-1">CET: {contract.cetMensal || 0}% a.m. / {contract.cetAnual || 0}% a.a.</span> : null}
                 </div>
               </div>
 
@@ -300,14 +360,24 @@ export const CreditPortfolioView: React.FC = () => {
                   <span className="font-bold font-mono text-zinc-100">
                     R$ {contract.valorParcelaMensal.toLocaleString('pt-BR')}
                   </span>
+                  <span className="text-[10px] text-zinc-500 block mt-1">Próximo: {contract.proximoVencimento ? new Date(`${contract.proximoVencimento}T12:00:00`).toLocaleDateString('pt-BR') : 'não informado'}</span>
                 </div>
 
-                <button
-                  onClick={() => openPayContractModal(contract)}
-                  className="px-4 py-2 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all"
-                >
-                  Pagar Parcela (PIX)
-                </button>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button
+                    onClick={() => handleEstimatePayoff(contract.id)}
+                    className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 border border-emerald-500/30 text-emerald-400 font-extrabold text-xs rounded-xl flex items-center gap-2 cursor-pointer transition-all"
+                  >
+                    <ReceiptText className="w-3.5 h-3.5" />
+                    Estimar quitação
+                  </button>
+                  <button
+                    onClick={() => openPayContractModal(contract)}
+                    className="px-4 py-2 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-zinc-950 font-extrabold text-xs rounded-xl shadow-md cursor-pointer transition-all"
+                  >
+                    Pagar Parcela (PIX)
+                  </button>
+                </div>
               </div>
             </div>
           );

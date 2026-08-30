@@ -12,13 +12,14 @@ import {
   Layers,
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
+import { getTotalOpenCardDebt } from '../utils/financialCalculations';
 
 export const QuittatementPlanningView: React.FC = () => {
-  const { contracts, cards } = useFinancial();
+  const { contracts, cards, transactions } = useFinancial();
 
   // Debt stats
   const totalContratosRestante = contracts.reduce((acc, c) => acc + c.valorRestante, 0);
-  const totalCartoesUtilizado = cards.reduce((acc, c) => acc + c.limiteUtilizado, 0);
+  const totalCartoesUtilizado = getTotalOpenCardDebt(transactions, cards);
   const quantoDevo = totalContratosRestante + totalCartoesUtilizado;
 
   const quantoJaPaguei = contracts.reduce((acc, c) => acc + c.valorPago, 0);

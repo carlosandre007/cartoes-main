@@ -13,6 +13,8 @@ import {
   Database,
   Save,
   LogOut,
+  Camera,
+  Trash2,
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
 import { isSupabaseConfigured } from '../lib/supabase';
@@ -20,7 +22,8 @@ import { useAuth } from '../context/AuthContext';
 
 export const SettingsView: React.FC = () => {
   const { isDarkMode, toggleDarkMode, isPwaInstallable, installPwa, bankAccounts } = useFinancial();
-  const { user, profile, updateAccount, signOut } = useAuth();
+  const { user, profile, updateAccount, updateAvatar, signOut } = useAuth();
+  const avatarInputRef = React.useRef<HTMLInputElement>(null);
   const [accountForm, setAccountForm] = React.useState({ name: '', phone: '', email: '', password: '' });
   const [accountMessage, setAccountMessage] = React.useState('');
   const [savingAccount, setSavingAccount] = React.useState(false);
@@ -41,6 +44,31 @@ export const SettingsView: React.FC = () => {
     setSavingAccount(false);
     setAccountMessage(result.message || (result.success ? 'Dados atualizados.' : 'Não foi possível atualizar.'));
     if (result.success) setAccountForm((current) => ({ ...current, password: '' }));
+  };
+
+  const handleAvatarChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { setAccountMessage('Selecione um arquivo de imagem.'); return; }
+    if (file.size > 10 * 1024 * 1024) { setAccountMessage('A imagem deve ter no máximo 10 MB.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = async () => {
+        const size = 320;
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        const crop = Math.min(image.width, image.height);
+        context.drawImage(image, (image.width - crop) / 2, (image.height - crop) / 2, crop, crop, 0, 0, size, size);
+        const result = await updateAvatar(canvas.toDataURL('image/jpeg', 0.82));
+        setAccountMessage(result.message || 'Foto atualizada.');
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
   };
 
   return (
@@ -67,6 +95,20 @@ export const SettingsView: React.FC = () => {
           </h3>
 
           <form onSubmit={handleAccountSubmit} className="p-4 rounded-xl bg-zinc-900/60 border border-zinc-800 space-y-3 text-xs">
+            <div className="flex flex-col sm:flex-row items-center gap-4 pb-3 border-b border-zinc-800">
+              <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-amber-600 via-amber-400 to-amber-200 p-1 shadow-lg shrink-0">
+                {profile?.avatarUrl ? <img src={profile.avatarUrl} alt="Foto de perfil" className="w-full h-full rounded-full object-cover bg-zinc-950" /> : <div className="w-full h-full rounded-full bg-zinc-950 flex items-center justify-center"><User className="w-9 h-9 text-amber-400" /></div>}
+              </div>
+              <div className="space-y-2 text-center sm:text-left">
+                <strong className="text-sm text-zinc-100 block">Foto de perfil</strong>
+                <p className="text-[11px] text-zinc-400">JPG, PNG ou WEBP. A imagem será ajustada automaticamente.</p>
+                <div className="flex flex-wrap justify-center sm:justify-start gap-2">
+                  <input ref={avatarInputRef} type="file" accept="image/*" onChange={handleAvatarChange} className="hidden" />
+                  <button type="button" onClick={() => avatarInputRef.current?.click()} className="px-3 py-2 bg-amber-500/10 border border-amber-500/30 text-amber-300 font-bold rounded-xl flex items-center gap-2"><Camera className="w-4 h-4" /> Adicionar foto</button>
+                  {profile?.avatarUrl && <button type="button" onClick={async () => { const result = await updateAvatar(''); setAccountMessage(result.message || 'Foto removida.'); }} className="px-3 py-2 bg-red-500/10 border border-red-500/30 text-red-400 font-bold rounded-xl flex items-center gap-2"><Trash2 className="w-4 h-4" /> Remover</button>}
+                </div>
+              </div>
+            </div>
             <label className="block"><span className="text-zinc-400">Nome</span><input value={accountForm.name} onChange={(e) => setAccountForm({ ...accountForm, name: e.target.value })} className="mt-1 w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 outline-none focus:border-amber-500" /></label>
             <label className="block"><span className="text-zinc-400">Telefone</span><input value={accountForm.phone} onChange={(e) => setAccountForm({ ...accountForm, phone: e.target.value })} className="mt-1 w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 outline-none focus:border-amber-500" /></label>
             <label className="block"><span className="text-zinc-400">E-mail</span><input type="email" value={accountForm.email} onChange={(e) => setAccountForm({ ...accountForm, email: e.target.value })} className="mt-1 w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-100 outline-none focus:border-amber-500" /></label>

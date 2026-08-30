@@ -10,13 +10,15 @@ import {
   Landmark,
   Edit2,
   Trash2,
+  Pencil,
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
 
 export const BankAccountsView: React.FC = () => {
-  const { bankAccounts, transactions, openNewTransactionModal, addBankAccount, updateBankAccount, deleteBankAccount } = useFinancial();
+  const { bankAccounts, transactions, openNewTransactionModal, addBankAccount, updateBankAccount, deleteBankAccount, toggleTransactionStatus, deleteContractWithTransactions } = useFinancial();
   const [selectedBankId, setSelectedBankId] = useState<string>(bankAccounts[0]?.id || '');
   const [isAddBankOpen, setIsAddBankOpen] = useState(false);
+  const [monthFilter, setMonthFilter] = useState('');
   const [newBankForm, setNewBankForm] = useState({
     banco: '',
     agencia: '0001',
@@ -65,13 +67,24 @@ export const BankAccountsView: React.FC = () => {
     updateBankAccount(bankId, { banco, saldo });
   };
 
+  const handleDeleteLinkedContract = async (contractId: string, description: string) => {
+    if (!confirm(`Excluir o contrato de "${description}" e TODAS as parcelas vinculadas? Use esta opção para refazer o financiamento do zero.`)) return;
+    const deleted = await deleteContractWithTransactions(contractId);
+    if (!deleted) alert('Não foi possível excluir o contrato completo no banco de dados.');
+  };
+
   const totalConsolidado = bankAccounts.reduce((acc, b) => acc + b.saldo, 0);
   const selectedAccount = bankAccounts.find((b) => b.id === selectedBankId) || bankAccounts[0];
 
   // Bank transactions
-  const bankTxs = transactions.filter(
-    (tx) => tx.contaBancariaId === selectedAccount?.id
-  );
+  const bankTxs = transactions
+    .filter((tx) => tx.contaBancariaId === selectedAccount?.id && (!monthFilter || tx.data.startsWith(monthFilter)))
+    .sort((a, b) => a.data.localeCompare(b.data));
+  const monthKeyFromOffset = (offset: number) => {
+    const date = new Date();
+    date.setMonth(date.getMonth() + offset);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  };
 
   return (
     <div className="p-6 space-y-6 text-zinc-100 font-sans">
@@ -251,9 +264,24 @@ export const BankAccountsView: React.FC = () => {
 
       {/* Bank Transactions List */}
       <div className="p-6 rounded-2xl bg-zinc-950/90 border border-amber-500/20 shadow-xl space-y-4">
-        <h3 className="text-sm font-bold text-zinc-100">
-          Extrato de Movimentações ({selectedAccount?.banco})
-        </h3>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-zinc-100">Extrato de Movimentações ({selectedAccount?.banco})</h3>
+            <span className="text-[10px] text-zinc-500">{bankTxs.length} lançamento(s) no período selecionado</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => setMonthFilter('')} className={`px-3 py-2 rounded-lg border text-[10px] font-bold cursor-pointer ${!monthFilter ? 'bg-amber-500 text-zinc-950 border-amber-400' : 'bg-zinc-900 text-zinc-400 border-zinc-800'}`}>Todos</button>
+            <button onClick={() => setMonthFilter(monthKeyFromOffset(0))} className={`px-3 py-2 rounded-lg border text-[10px] font-bold cursor-pointer ${monthFilter === monthKeyFromOffset(0) ? 'bg-amber-500 text-zinc-950 border-amber-400' : 'bg-zinc-900 text-zinc-400 border-zinc-800'}`}>Mês atual</button>
+            <button onClick={() => setMonthFilter(monthKeyFromOffset(1))} className={`px-3 py-2 rounded-lg border text-[10px] font-bold cursor-pointer ${monthFilter === monthKeyFromOffset(1) ? 'bg-amber-500 text-zinc-950 border-amber-400' : 'bg-zinc-900 text-zinc-400 border-zinc-800'}`}>Próximo mês</button>
+            <input
+              type="month"
+              value={monthFilter}
+              onChange={(event) => setMonthFilter(event.target.value)}
+              className="px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-[10px] text-zinc-200 font-mono"
+              title="Escolher outro mês"
+            />
+          </div>
+        </div>
 
         <div className="space-y-3">
           {bankTxs.length === 0 ? (
@@ -273,13 +301,37 @@ export const BankAccountsView: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="text-right font-mono font-bold text-sm">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => openNewTransactionModal(tx)}
+                    className="p-2 rounded-lg text-zinc-500 hover:text-amber-400 border border-zinc-800 hover:border-amber-500/30 cursor-pointer"
+                    title="Editar lançamento"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  {tx.financiamentoDetalhes?.contratoId && (
+                    <button
+                      onClick={() => handleDeleteLinkedContract(tx.financiamentoDetalhes!.contratoId, tx.descricao)}
+                      className="p-2 rounded-lg text-zinc-500 hover:text-red-400 border border-zinc-800 hover:border-red-500/30 hover:bg-red-500/10 cursor-pointer"
+                      title="Excluir contrato completo e todas as parcelas"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => toggleTransactionStatus(tx.id)}
+                    className={`px-3 py-2 rounded-lg border text-[10px] font-bold cursor-pointer ${tx.status === 'PAGO' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-amber-500/30 bg-amber-500/10 text-amber-400'}`}
+                  >
+                    {tx.status === 'PAGO' ? 'Pago ✓' : 'Marcar pago'}
+                  </button>
+                  <div className="text-right font-mono font-bold text-sm">
                   <span
                     className={tx.tipo === 'RECEITA' ? 'text-emerald-400' : 'text-amber-400'}
                   >
                     {tx.tipo === 'RECEITA' ? '+' : '-'} R${' '}
                     {tx.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                   </span>
+                  </div>
                 </div>
               </div>
             ))

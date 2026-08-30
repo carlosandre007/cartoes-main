@@ -8,12 +8,16 @@ import {
   Clock,
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
+import { getMonthlyCommitments } from '../utils/monthlyCommitments';
 
 export const CalendarView: React.FC = () => {
-  const { transactions, openNewTransactionModal, toggleTransactionStatus } = useFinancial();
+  const { transactions, cards, openNewTransactionModal, toggleTransactionStatus, payCardInvoice } = useFinancial();
 
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 7, 1)); // August 2026
-  const [selectedDayStr, setSelectedDayStr] = useState<string>('2026-08-15');
+  const today = new Date();
+  const [currentDate, setCurrentDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const [selectedDayStr, setSelectedDayStr] = useState<string>(
+    `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+  );
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth(); // 0-indexed
@@ -46,7 +50,8 @@ export const CalendarView: React.FC = () => {
   };
 
   // Transactions on selected day
-  const dayTransactions = transactions.filter((tx) => tx.data === selectedDayStr);
+  const currentMonthCommitments = getMonthlyCommitments(transactions, cards, today);
+  const dayTransactions = currentMonthCommitments.filter((item) => item.date === selectedDayStr);
 
   return (
     <div className="p-6 space-y-6 text-zinc-100 font-sans">
@@ -61,7 +66,7 @@ export const CalendarView: React.FC = () => {
           </div>
           <h2 className="text-xl font-extrabold text-zinc-100">Calendário Financeiro Unificado</h2>
           <p className="text-xs text-zinc-400">
-            Cronograma diário de receitas, despesas, parcelas de cartão e vencimentos de carnês.
+            Custos fixos e faturas de cartão com vencimento no mês corrente.
           </p>
         </div>
 
@@ -124,9 +129,9 @@ export const CalendarView: React.FC = () => {
                 dayNum
               ).padStart(2, '0')}`;
 
-              const dayTxs = transactions.filter((tx) => tx.data === dateStr);
-              const hasReceita = dayTxs.some((tx) => tx.tipo === 'RECEITA');
-              const hasDespesa = dayTxs.some((tx) => tx.tipo === 'DESPESA');
+              const dayTxs = currentMonthCommitments.filter((item) => item.date === dateStr);
+              const hasFixedCost = dayTxs.some((item) => item.kind === 'FIXED_COST');
+              const hasCardInvoice = dayTxs.some((item) => item.kind === 'CARD_INVOICE');
               const isSelected = selectedDayStr === dateStr;
 
               return (
@@ -154,11 +159,11 @@ export const CalendarView: React.FC = () => {
 
                   {/* Indicators */}
                   <div className="flex items-center gap-1 mt-1">
-                    {hasReceita && (
-                      <span className="w-2 h-2 rounded-full bg-emerald-400" title="Receita" />
+                    {hasFixedCost && (
+                      <span className="w-2 h-2 rounded-full bg-amber-400" title="Custo fixo" />
                     )}
-                    {hasDespesa && (
-                      <span className="w-2 h-2 rounded-full bg-amber-400" title="Despesa" />
+                    {hasCardInvoice && (
+                      <span className="w-2 h-2 rounded-full bg-blue-400" title="Fatura do cartão" />
                     )}
                   </div>
                 </div>
@@ -188,24 +193,31 @@ export const CalendarView: React.FC = () => {
                   className="p-3.5 rounded-xl bg-zinc-900/80 border border-zinc-800 space-y-2"
                 >
                   <div className="flex justify-between items-start">
-                    <span className="font-bold text-xs text-zinc-200">{tx.descricao}</span>
-                    <span
-                      className={`font-mono text-xs font-bold ${
-                        tx.tipo === 'RECEITA' ? 'text-emerald-400' : 'text-amber-400'
-                      }`}
-                    >
-                      {tx.tipo === 'RECEITA' ? '+' : '-'} R$ {tx.valor.toLocaleString('pt-BR')}
+                    <span className="font-bold text-xs text-zinc-200">
+                      {tx.kind === 'CARD_INVOICE' ? `Cartão ${tx.title}` : tx.title}
+                    </span>
+                    <span className="font-mono text-xs font-bold text-amber-400">
+                      R$ {tx.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                     </span>
                   </div>
 
                   <div className="flex justify-between items-center text-[10px] text-zinc-400 font-mono pt-1">
-                    <span>{tx.categoria}</span>
-                    <button
-                      onClick={() => toggleTransactionStatus(tx.id)}
-                      className="text-amber-400 font-bold hover:underline"
-                    >
-                      {tx.status}
-                    </button>
+                    <span>{tx.category}</span>
+                    {tx.transactionId ? (
+                      <button
+                        onClick={() => toggleTransactionStatus(tx.transactionId!)}
+                        className="text-amber-400 font-bold hover:underline"
+                      >
+                        {tx.status}
+                      </button>
+                    ) : tx.cardId ? (
+                      <button
+                        onClick={() => payCardInvoice(tx.cardId!)}
+                        className="text-emerald-400 font-bold hover:underline"
+                      >
+                        MARCAR PAGO
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               ))

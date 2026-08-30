@@ -13,21 +13,23 @@ import {
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
 import { downloadCSVFile, exportTransactionsToCSV } from '../utils/importExport';
+import { getConsolidatedFlowItems } from '../utils/financialCalculations';
 
 export const ReportsView: React.FC = () => {
-  const { transactions } = useFinancial();
+  const { transactions, cards } = useFinancial();
+  const paidTransactions = getConsolidatedFlowItems(transactions, cards).filter((tx) => tx.status === 'PAGO');
 
-  const totalReceitas = transactions
+  const totalReceitas = paidTransactions
     .filter((tx) => tx.tipo === 'RECEITA')
     .reduce((acc, tx) => acc + tx.valor, 0);
 
-  const totalDespesas = transactions
+  const totalDespesas = paidTransactions
     .filter((tx) => tx.tipo === 'DESPESA')
     .reduce((acc, tx) => acc + tx.valor, 0);
 
   // Group despesas by category
   const categoriesMap: Record<string, number> = {};
-  transactions
+  paidTransactions
     .filter((tx) => tx.tipo === 'DESPESA')
     .forEach((tx) => {
       categoriesMap[tx.categoria] = (categoriesMap[tx.categoria] || 0) + tx.valor;
@@ -38,7 +40,7 @@ export const ReportsView: React.FC = () => {
     .slice(0, 5);
 
   // Top single expenses
-  const topDespesas = [...transactions]
+  const topDespesas = [...paidTransactions]
     .filter((tx) => tx.tipo === 'DESPESA')
     .sort((a, b) => b.valor - a.valor)
     .slice(0, 5);
@@ -46,7 +48,7 @@ export const ReportsView: React.FC = () => {
   const handleExportCSV = () => {
     downloadCSVFile(
       `Relatorio_Aureum_BI_${new Date().toISOString().split('T')[0]}.csv`,
-      exportTransactionsToCSV(transactions)
+      exportTransactionsToCSV(paidTransactions)
     );
   };
 
@@ -93,7 +95,7 @@ export const ReportsView: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="p-6 rounded-2xl bg-zinc-950/90 border border-emerald-500/20 shadow-xl flex justify-between items-center">
           <div>
-            <span className="text-xs text-zinc-400 block">Total de Entradas Gravadas</span>
+            <span className="text-xs text-zinc-400 block">Total de Entradas Realizadas</span>
             <div className="text-2xl font-black font-mono text-emerald-400 mt-1">
               R$ {totalReceitas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
             </div>
@@ -103,7 +105,7 @@ export const ReportsView: React.FC = () => {
 
         <div className="p-6 rounded-2xl bg-zinc-950/90 border border-amber-500/20 shadow-xl flex justify-between items-center">
           <div>
-            <span className="text-xs text-zinc-400 block">Total de Saídas Gravadas</span>
+            <span className="text-xs text-zinc-400 block">Total de Saídas Realizadas</span>
             <div className="text-2xl font-black font-mono text-amber-400 mt-1">
               R$ {totalDespesas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
             </div>

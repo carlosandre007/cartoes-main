@@ -14,6 +14,7 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
+import { getCanonicalTransactions, getTotalOpenCardDebt } from '../utils/financialCalculations';
 
 export const CentralFinanceView: React.FC = () => {
   const {
@@ -30,17 +31,18 @@ export const CentralFinanceView: React.FC = () => {
   const totalValorContratos = contracts.reduce((acc, c) => acc + c.valorTotal, 0);
   const totalValorPago = contracts.reduce((acc, c) => acc + c.valorPago, 0);
   const totalValorRestanteContratos = contracts.reduce((acc, c) => acc + c.valorRestante, 0);
-  const totalCartoesUtilizado = cards.reduce((acc, c) => acc + c.limiteUtilizado, 0);
+  const canonicalTransactions = getCanonicalTransactions(transactions);
+  const totalCartoesUtilizado = getTotalOpenCardDebt(canonicalTransactions, cards);
 
   const dividaTotal = totalValorRestanteContratos + totalCartoesUtilizado;
   const valorQuitado = totalValorPago;
   const valorRestante = dividaTotal;
 
   // Total Income (Receitas)
-  const totalReceitaMensal = transactions
+  const totalReceitaMensal = canonicalTransactions
     .filter((tx) => tx.tipo === 'RECEITA' && tx.status === 'PAGO')
     .reduce((acc, tx) => acc + tx.valor, 0);
-  const incomeMonths = new Set(transactions.filter((tx) => tx.tipo === 'RECEITA' && tx.status === 'PAGO').map((tx) => tx.data.slice(0, 7))).size || 1;
+  const incomeMonths = new Set(canonicalTransactions.filter((tx) => tx.tipo === 'RECEITA' && tx.status === 'PAGO').map((tx) => tx.data.slice(0, 7))).size || 1;
   const receitaMensalMedia = totalReceitaMensal / incomeMonths;
 
   // Total Debt Payment Monthly
@@ -90,12 +92,15 @@ export const CentralFinanceView: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Dívida Total */}
         <div className="p-5 rounded-2xl bg-zinc-950/90 border border-red-500/30 shadow-lg space-y-2">
-          <span className="text-xs font-medium text-zinc-400">Dívida Total (Passivo)</span>
+          <span className="text-xs font-medium text-zinc-400">Dívida Total para Quitação</span>
           <div className="text-xl font-black font-mono text-red-400">
             R$ {dividaTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
           </div>
-          <span className="text-[11px] text-zinc-500 font-mono">
-            {contracts.length} contratos ativos + {cards.length} cartões
+          <span className="text-[11px] text-zinc-500 font-mono block">
+            Contratos: R$ {totalValorRestanteContratos.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+          </span>
+          <span className="text-[11px] text-zinc-500 font-mono block">
+            Cartões e parcelas futuras: R$ {totalCartoesUtilizado.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
           </span>
         </div>
 

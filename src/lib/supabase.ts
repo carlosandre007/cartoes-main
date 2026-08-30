@@ -114,6 +114,8 @@ export const mapContractFromDB = (row: any): CreditContract => ({
   parcelasPagas: Number(row.parcelas_pagas),
   valorParcelaMensal: Number(row.valor_parcela_mensal),
   taxaJurosAnual: Number(row.taxa_juros_anual),
+  cetMensal: Number(row.cet_mensal || 0),
+  cetAnual: Number(row.cet_anual || 0),
   proximoVencimento: row.proximo_vencimento || '',
   categoria: row.categoria || '',
   status: row.status || 'EM_DIA',
@@ -131,6 +133,8 @@ export const mapContractToDB = (contract: CreditContract) => ({
   parcelas_pagas: contract.parcelasPagas,
   valor_parcela_mensal: contract.valorParcelaMensal,
   taxa_juros_anual: contract.taxaJurosAnual,
+  cet_mensal: contract.cetMensal || 0,
+  cet_anual: contract.cetAnual || 0,
   proximo_vencimento: contract.proximoVencimento,
   categoria: contract.categoria,
   status: contract.status,
@@ -239,6 +243,12 @@ export const supabaseApi = {
   async deleteById(table: string, id: string): Promise<{ success: boolean; error?: any }> {
     if (!isSupabaseConfigured) return { success: true };
     const { error } = await supabase.from(table).delete().eq('id', id);
+    return error ? { success: false, error } : { success: true };
+  },
+
+  async deleteByIds(table: string, ids: string[]): Promise<{ success: boolean; error?: any }> {
+    if (!ids.length || !isSupabaseConfigured) return { success: true };
+    const { error } = await supabase.from(table).delete().in('id', ids);
     return error ? { success: false, error } : { success: true };
   },
 
@@ -392,8 +402,12 @@ export const supabaseApi = {
       const dbRows = contracts.map(mapContractToDB);
       const { error } = await supabase.from('credit_contracts').upsert(dbRows);
       if (error) {
+        // Compatibilidade com bancos criados antes dos campos de CET.
+        const legacyRows = dbRows.map(({ cet_mensal: _cetMensal, cet_anual: _cetAnual, ...row }) => row);
+        const { error: legacyError } = await supabase.from('credit_contracts').upsert(legacyRows);
+        if (!legacyError) return { success: true };
         console.error('[Supabase Error] upsertContracts:', error);
-        return { success: false, error };
+        return { success: false, error: legacyError };
       }
       return { success: true };
     } catch (err) {

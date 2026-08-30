@@ -90,12 +90,17 @@ CREATE TABLE IF NOT EXISTS public.credit_contracts (
     parcelas_pagas INTEGER NOT NULL DEFAULT 0,
     valor_parcela_mensal NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
     taxa_juros_anual NUMERIC(5, 2) NOT NULL DEFAULT 0.00,
+    cet_mensal NUMERIC(5, 2) NOT NULL DEFAULT 0.00,
+    cet_anual NUMERIC(5, 2) NOT NULL DEFAULT 0.00,
     proximo_vencimento TEXT,
     categoria TEXT,
     status TEXT NOT NULL DEFAULT 'EM_DIA' CHECK (status IN ('EM_DIA', 'ATRASADO', 'LIQUIDADO')),
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+ALTER TABLE public.credit_contracts ADD COLUMN IF NOT EXISTS cet_mensal NUMERIC(5, 2) NOT NULL DEFAULT 0.00;
+ALTER TABLE public.credit_contracts ADD COLUMN IF NOT EXISTS cet_anual NUMERIC(5, 2) NOT NULL DEFAULT 0.00;
 
 -- ==============================================================================
 -- 6. ÚNICO FLUXO FINANCEIRO CENTRAL (TRANSACTIONS)
@@ -305,3 +310,19 @@ DROP POLICY IF EXISTS "notifications_policy_all" ON public.notifications;
 CREATE POLICY "notifications_policy_all" ON public.notifications
     FOR ALL USING (auth.role() = 'anon' OR auth.uid() = user_id OR user_id IS NULL)
     WITH CHECK (auth.role() = 'anon' OR auth.uid() = user_id OR user_id IS NULL);
+-- Histórico da Central de Inteligência Financeira (IA executada somente sob demanda)
+CREATE TABLE IF NOT EXISTS financial_ai_analyses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  score INTEGER CHECK (score IS NULL OR (score >= 0 AND score <= 100)),
+  analysis TEXT NOT NULL,
+  summary JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE financial_ai_analyses ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users manage own financial analyses" ON financial_ai_analyses;
+CREATE POLICY "Users manage own financial analyses" ON financial_ai_analyses
+  FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE INDEX IF NOT EXISTS financial_ai_analyses_user_created_idx
+  ON financial_ai_analyses(user_id, created_at DESC);

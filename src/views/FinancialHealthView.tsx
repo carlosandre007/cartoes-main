@@ -9,16 +9,18 @@ import {
   Zap,
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
+import { getCanonicalTransactions, getTotalOpenCardDebt } from '../utils/financialCalculations';
 
 export const FinancialHealthView: React.FC = () => {
   const { transactions, bankAccounts, contracts, cards } = useFinancial();
 
+  const canonicalTransactions = getCanonicalTransactions(transactions);
   // Metrics
-  const totalReceitas = transactions
+  const totalReceitas = canonicalTransactions
     .filter((tx) => tx.tipo === 'RECEITA' && tx.status === 'PAGO')
     .reduce((acc, tx) => acc + tx.valor, 0);
 
-  const totalDespesas = transactions
+  const totalDespesas = canonicalTransactions
     .filter((tx) => tx.tipo === 'DESPESA' && tx.status === 'PAGO')
     .reduce((acc, tx) => acc + tx.valor, 0);
 
@@ -34,11 +36,11 @@ export const FinancialHealthView: React.FC = () => {
     ? Math.round((totalParcelasMensais / totalReceitas) * 100)
     : 0;
 
-  const activeMonths = new Set(transactions.filter((tx) => tx.status === 'PAGO').map((tx) => tx.data.slice(0, 7))).size || 1;
+  const activeMonths = new Set(canonicalTransactions.filter((tx) => tx.status === 'PAGO').map((tx) => tx.data.slice(0, 7))).size || 1;
   const despesaMensalMedia = totalDespesas / activeMonths;
   const mesesCobertura = despesaMensalMedia > 0 ? totalSaldos / despesaMensalMedia : 0;
   const mesesCoberturaEmergencia = mesesCobertura.toFixed(1);
-  const totalDividas = contracts.reduce((sum, contract) => sum + contract.valorRestante, 0) + cards.reduce((sum, card) => sum + card.limiteUtilizado, 0);
+  const totalDividas = contracts.reduce((sum, contract) => sum + contract.valorRestante, 0) + getTotalOpenCardDebt(canonicalTransactions, cards);
   const leverage = totalSaldos > 0 ? Math.round((totalDividas / totalSaldos) * 100) : totalDividas > 0 ? 100 : 0;
   const healthScore = transactions.length === 0 && bankAccounts.length === 0
     ? 0

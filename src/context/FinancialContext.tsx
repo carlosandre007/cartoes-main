@@ -9,8 +9,10 @@ import {
   ViewTab,
   TransactionStatus,
   OrigemFinanceira,
+  RecorrenciaTipo,
 } from '../types';
 import { isSupabaseConfigured, supabaseApi } from '../lib/supabase';
+import { addMonthsToCompetence, calculateInvoiceCompetence, getConsolidatedFlowItems, getInvoiceDueDate, getOpenCardInvoice, getOpenCardInvoices, getTransactionInvoiceCompetence, resolveTransactionCard } from '../utils/financialCalculations';
 
 interface FinancialContextType {
   transactions: Transaction[];
@@ -50,12 +52,14 @@ interface FinancialContextType {
   addContract: (contract: Omit<CreditContract, 'id'>) => string;
   updateContract: (id: string, contract: Partial<CreditContract>) => void;
   deleteContract: (id: string) => void;
+  deleteContractWithTransactions: (id: string) => Promise<boolean>;
   addTransaction: (tx: Omit<Transaction, 'id'>, generateInstallments?: boolean) => void;
   updateTransaction: (id: string, updated: Partial<Transaction>) => void;
   deleteTransaction: (id: string) => void;
+  deleteTransactions: (ids: string[]) => Promise<boolean>;
   toggleTransactionStatus: (id: string) => void;
   payContractInstallment: (contractId: string, valor: number, metodo: string) => void;
-  payCardInvoice: (cardId: string) => void;
+  payCardInvoice: (cardId: string, billingMonth?: string) => void;
   addGoal: (goal: Omit<FinancialGoal, 'id'>) => void;
   updateGoal: (id: string, updated: Partial<FinancialGoal>) => void;
   deleteGoal: (id: string) => void;
@@ -205,16 +209,9 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     if (!hasLoadedRemoteData.current) return;
     setCards((previous) => {
       let changed = false;
+      const invoices = getOpenCardInvoices(transactions, previous);
       const next = previous.map((card) => {
-        const used = transactions
-          .filter(
-            (tx) =>
-              tx.tipo === 'DESPESA' &&
-              tx.origemFinanceira === 'CARTAO_CREDITO' &&
-              tx.cartaoDetalhes?.cartaoId === card.id &&
-              tx.status !== 'PAGO'
-          )
-          .reduce((total, tx) => total + tx.valor, 0);
+        const used = invoices.filter((invoice) => invoice.cardId === card.id).reduce((sum, invoice) => sum + invoice.amount, 0);
         if (Math.abs(card.limiteUtilizado - used) < 0.005) return card;
         changed = true;
         return { ...card, limiteUtilizado: used };
@@ -225,14 +222,19 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     setContracts((previous) => {
       let changed = false;
       const next = previous.map((contract) => {
-        const payments = transactions.filter(
+        const contractTransactions = transactions.filter(
           (tx) =>
             tx.tipo === 'DESPESA' &&
-            tx.status === 'PAGO' &&
             tx.financiamentoDetalhes?.contratoId === contract.id
         );
-        const paid = payments.reduce((total, tx) => total + tx.valor, 0);
-        const installmentsPaid = Math.min(payments.length, contract.parcelasTotal);
+        const payments = contractTransactions.filter((tx) => tx.status === 'PAGO');
+        const firstRegisteredInstallment = contractTransactions.length
+          ? Math.min(...contractTransactions.map((tx) => tx.financiamentoDetalhes?.parcelaAtual || 1))
+          : 1;
+        const implicitPaidCount = Math.max(0, firstRegisteredInstallment - 1);
+        const implicitPaidValue = implicitPaidCount * contract.valorParcelaMensal;
+        const paid = implicitPaidValue + payments.reduce((total, tx) => total + tx.valor, 0);
+        const installmentsPaid = Math.min(implicitPaidCount + payments.length, contract.parcelasTotal);
         const remaining = Math.max(0, contract.valorTotal - paid);
         const status: CreditContract['status'] =
           installmentsPaid >= contract.parcelasTotal || remaining <= 0 ? 'LIQUIDADO' : 'EM_DIA';
@@ -255,13 +257,98 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     });
   }, [transactions]);
 
+  // Recupera contratos que ficaram sem registro principal em versões antigas.
+  useEffect(() => {
+    if (!hasLoadedRemoteData.current || !transactions.length) return;
+    const existingIds = new Set(contracts.map((contract) => contract.id));
+    const groups = new Map<string, Transaction[]>();
+    transactions
+      .filter((tx) => ['FINANCIAMENTO', 'EMPRESTIMO', 'CARNE', 'CONSORCIO'].includes(tx.origemFinanceira))
+      .filter((tx) => tx.financiamentoDetalhes?.contratoId && !existingIds.has(tx.financiamentoDetalhes.contratoId))
+      .forEach((tx) => {
+        const id = tx.financiamentoDetalhes!.contratoId;
+        groups.set(id, [...(groups.get(id) || []), tx]);
+      });
+    const latestByDebt = new Map<string, Transaction[]>();
+    groups.forEach((items) => {
+      const first = items[0];
+      const title = first.descricao.replace(/\s*\(\d+\/\d+\)\s*$/, '').trim();
+      const key = `${first.financiamentoDetalhes!.instituicao.toLowerCase()}|${title.toLowerCase()}`;
+      const existing = latestByDebt.get(key);
+      const start = items.reduce((min, tx) => tx.data < min ? tx.data : min, first.data);
+      const existingStart = existing?.reduce((min, tx) => tx.data < min ? tx.data : min, existing[0].data);
+      if (!existing || start > existingStart!) latestByDebt.set(key, items);
+    });
+    const recovered: CreditContract[] = Array.from(latestByDebt.values()).map((items) => {
+      const ordered = [...items].sort((a, b) => a.data.localeCompare(b.data));
+      const first = ordered[0];
+      const details = first.financiamentoDetalhes!;
+      const firstInstallment = Math.min(...items.map((tx) => tx.financiamentoDetalhes?.parcelaAtual || 1));
+      const explicitPaidItems = items.filter((tx) => tx.status === 'PAGO');
+      const paidCount = Math.min(details.parcelasTotal, Math.max(0, firstInstallment - 1) + explicitPaidItems.length);
+      const paidValue = Math.max(0, firstInstallment - 1) * first.valor + explicitPaidItems.reduce((sum, tx) => sum + tx.valor, 0);
+      const title = first.descricao.replace(/\s*\(\d+\/\d+\)\s*$/, '').trim();
+      return {
+        id: details.contratoId, titulo: title, tipo: first.origemFinanceira as CreditContract['tipo'],
+        instituicao: details.instituicao, valorTotal: details.valorTotalContrato,
+        valorPago: paidValue, valorRestante: Math.max(0, details.valorTotalContrato - paidValue),
+        parcelasTotal: details.parcelasTotal, parcelasPagas: paidCount, valorParcelaMensal: first.valor,
+        taxaJurosAnual: details.taxaJurosAnual, cetMensal: details.cetMensal, cetAnual: details.cetAnual,
+        proximoVencimento: ordered.find((tx) => tx.status !== 'PAGO')?.data || details.proximoVencimento || first.data,
+        categoria: first.categoria, status: paidCount >= details.parcelasTotal ? 'LIQUIDADO' : 'EM_DIA',
+      };
+    });
+    if (recovered.length) setContracts((previous) => [...previous, ...recovered.filter((item) => !previous.some((contract) => contract.id === item.id))]);
+  }, [transactions, contracts]);
+
+  // Materializa cobranças recorrentes de cartão somente quando a competência chega.
+  // Nenhuma parcela futura é criada ou somada antecipadamente.
+  useEffect(() => {
+    if (!hasLoadedRemoteData.current || cards.length === 0) return;
+    const today = new Date();
+    const currentCompetence = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    const recurringGroups = new Map<string, Transaction[]>();
+    transactions.filter((tx) => tx.cartaoDetalhes?.recorrente && tx.cartaoDetalhes.recorrenciaAtiva !== false && tx.cartaoDetalhes.recorrenciaId)
+      .forEach((tx) => {
+        const key = tx.cartaoDetalhes!.recorrenciaId!;
+        recurringGroups.set(key, [...(recurringGroups.get(key) || []), tx]);
+      });
+    const additions: Transaction[] = [];
+    recurringGroups.forEach((items, recurrenceId) => {
+      const card = resolveTransactionCard(items[0], cards);
+      if (!card) return;
+      const ordered = [...items].sort((a, b) => getTransactionInvoiceCompetence(a, card).localeCompare(getTransactionInvoiceCompetence(b, card)));
+      let latest = ordered[ordered.length - 1];
+      let competence = getTransactionInvoiceCompetence(latest, card);
+      let occurrence = Math.max(...ordered.map((tx) => tx.cartaoDetalhes?.parcelaAtual || 1));
+      while (competence < currentCompetence) {
+        competence = addMonthsToCompetence(competence, 1);
+        occurrence += 1;
+        if (items.some((tx) => getTransactionInvoiceCompetence(tx, card) === competence) || additions.some((tx) => tx.cartaoDetalhes?.recorrenciaId === recurrenceId && tx.cartaoDetalhes?.competenciaFatura === competence)) continue;
+        latest = {
+          ...latest,
+          id: `${recurrenceId}-${competence}`,
+          data: getInvoiceDueDate(competence, card.vencimentoDia),
+          status: 'PENDENTE',
+          cartaoDetalhes: {
+            ...latest.cartaoDetalhes!, cartaoId: card.id, cartaoNome: card.nome,
+            parcelaAtual: occurrence, parcelasTotal: undefined, competenciaFatura: competence,
+            recorrente: true, recorrenciaId: recurrenceId, recorrenciaAtiva: true,
+          },
+        };
+        additions.push(latest);
+      }
+    });
+    if (additions.length) setTransactions((previous) => [...additions, ...previous]);
+  }, [transactions, cards]);
+
   useEffect(() => {
     if (!hasLoadedRemoteData.current) return;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const limit = new Date(today);
-    limit.setDate(limit.getDate() + 7);
-    const dueAlerts: NotificationItem[] = transactions
+    limit.setDate(limit.getDate() + 3);
+    const dueAlerts: NotificationItem[] = getConsolidatedFlowItems(transactions, cards)
       .filter((tx) => tx.tipo === 'DESPESA' && tx.status !== 'PAGO')
       .filter((tx) => {
         const due = new Date(`${tx.data}T00:00:00`);
@@ -285,7 +372,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
       const signature = (items: NotificationItem[]) => items.map((item) => `${item.id}:${item.lida}`).join('|');
       return signature(previous) === signature(next) ? previous : next;
     });
-  }, [transactions]);
+  }, [transactions, cards]);
 
   // Modals UI
   const [isNewTransactionOpen, setIsNewTransactionOpen] = useState(false);
@@ -360,10 +447,56 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     if (isSupabaseConfigured) void supabaseApi.deleteById('credit_contracts', id);
   };
 
+  const deleteContractWithTransactions = async (id: string): Promise<boolean> => {
+    const linkedTransactions = transactions.filter((tx) => tx.financiamentoDetalhes?.contratoId === id);
+    const linkedIds = linkedTransactions.map((tx) => tx.id);
+    if (isSupabaseConfigured) {
+      const transactionsResult = await supabaseApi.deleteByIds('transactions', linkedIds);
+      if (!transactionsResult.success) {
+        console.error('Erro ao excluir parcelas do contrato:', transactionsResult.error);
+        return false;
+      }
+      const contractResult = await supabaseApi.deleteById('credit_contracts', id);
+      if (!contractResult.success) {
+        console.error('Erro ao excluir contrato:', contractResult.error);
+        return false;
+      }
+    }
+
+    const balanceReversals = new Map<string, number>();
+    linkedTransactions.forEach((tx) => {
+      if (tx.status !== 'PAGO' || !tx.contaBancariaId) return;
+      const reversal = tx.tipo === 'RECEITA' ? -tx.valor : tx.valor;
+      balanceReversals.set(tx.contaBancariaId, (balanceReversals.get(tx.contaBancariaId) || 0) + reversal);
+    });
+    if (balanceReversals.size) {
+      setBankAccounts((accounts) => accounts.map((account) => ({
+        ...account,
+        saldo: account.saldo + (balanceReversals.get(account.id) || 0),
+      })));
+    }
+    setTransactions((previous) => previous.filter((tx) => !linkedIds.includes(tx.id)));
+    setContracts((previous) => previous.filter((contract) => contract.id !== id));
+    return true;
+  };
+
   // Add Transaction
   const addTransaction = (txData: Omit<Transaction, 'id'>, generateInstallments = false) => {
     const id = createId('tx');
-    const newTx: Transaction = { ...txData, id };
+    let newTx: Transaction = { ...txData, id };
+    if (newTx.origemFinanceira === 'CARTAO_CREDITO' && newTx.cartaoDetalhes) {
+      const card = cards.find((item) => item.id === newTx.cartaoDetalhes!.cartaoId);
+      const closingDay = newTx.cartaoDetalhes.melhorDiaCompra || card?.fechamentoDia || 1;
+      const dueDay = newTx.cartaoDetalhes.diaVencimento || card?.vencimentoDia || 1;
+      newTx = {
+        ...newTx,
+        cartaoDetalhes: {
+          ...newTx.cartaoDetalhes,
+          dataCompra: newTx.cartaoDetalhes.dataCompra || newTx.data,
+          competenciaFatura: newTx.cartaoDetalhes.competenciaFatura || calculateInvoiceCompetence(newTx.data, closingDay, dueDay),
+        },
+      };
+    }
 
     let newTxList: Transaction[] = [newTx];
 
@@ -376,24 +509,22 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     ) {
       newTxList = [];
       const totalP = newTx.cartaoDetalhes.parcelasTotal;
-      const valorParcela = newTx.valor / totalP;
-      const baseDate = new Date(newTx.data);
+      const valorParcela = Number((newTx.valor / totalP).toFixed(2));
+      const baseCompetence = newTx.cartaoDetalhes.competenciaFatura!;
 
       for (let i = 1; i <= totalP; i++) {
-        const nextDate = new Date(baseDate);
-        nextDate.setMonth(baseDate.getMonth() + (i - 1));
-
         const pTx: Transaction = {
           ...newTx,
           id: `${id}-${i}`,
-          valor: Number(valorParcela.toFixed(2)),
-          data: nextDate.toISOString().split('T')[0],
+          valor: i === totalP ? Number((newTx.valor - valorParcela * (totalP - 1)).toFixed(2)) : valorParcela,
+          data: newTx.cartaoDetalhes?.dataCompra || newTx.data,
           descricao: `${newTx.descricao} (${i}/${totalP})`,
           status: i === 1 ? newTx.status : 'AGENDADO',
           cartaoDetalhes: {
             ...newTx.cartaoDetalhes,
             parcelaAtual: i,
             parcelasTotal: totalP,
+            competenciaFatura: addMonthsToCompetence(baseCompetence, i - 1),
           },
         };
         newTxList.push(pTx);
@@ -405,16 +536,18 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     ) {
       newTxList = [];
       const total = newTx.financiamentoDetalhes.parcelasTotal;
-      const baseDate = new Date(`${newTx.data}T12:00:00`);
-      for (let i = 1; i <= total; i += 1) {
+      const firstInstallment = Math.min(Math.max(newTx.financiamentoDetalhes.parcelaAtual || 1, 1), total);
+      const firstDueDate = newTx.financiamentoDetalhes.proximoVencimento || newTx.data;
+      const baseDate = new Date(`${firstDueDate}T12:00:00`);
+      for (let i = firstInstallment; i <= total; i += 1) {
         const dueDate = new Date(baseDate);
-        dueDate.setMonth(baseDate.getMonth() + i - 1);
+        dueDate.setMonth(baseDate.getMonth() + i - firstInstallment);
         newTxList.push({
           ...newTx,
           id: `${id}-${i}`,
           data: dueDate.toISOString().slice(0, 10),
           descricao: `${newTx.descricao} (${i}/${total})`,
-          status: i === 1 ? newTx.status : 'AGENDADO',
+          status: i === firstInstallment ? newTx.status : 'AGENDADO',
           financiamentoDetalhes: {
             ...newTx.financiamentoDetalhes,
             parcelaAtual: i,
@@ -422,32 +555,9 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         });
       }
     } else if (newTx.custoFixoDetalhes?.ativo && newTx.custoFixoDetalhes.recorrencia !== 'UNICA') {
-      newTxList = [];
-      const recurrence = newTx.custoFixoDetalhes.recorrencia;
-      const occurrences = recurrence === 'SEMANAL' ? 52 : recurrence === 'MENSAL' ? 12 : recurrence === 'TRIMESTRAL' ? 4 : 3;
-      const baseDate = new Date(`${newTx.data}T12:00:00`);
-      for (let i = 0; i < occurrences; i += 1) {
-        const dueDate = new Date(baseDate);
-        if (recurrence === 'SEMANAL') dueDate.setDate(baseDate.getDate() + i * 7);
-        if (recurrence === 'MENSAL') dueDate.setMonth(baseDate.getMonth() + i);
-        if (recurrence === 'TRIMESTRAL') dueDate.setMonth(baseDate.getMonth() + i * 3);
-        if (recurrence === 'ANUAL') dueDate.setFullYear(baseDate.getFullYear() + i);
-        const nextDue = new Date(dueDate);
-        if (recurrence === 'SEMANAL') nextDue.setDate(dueDate.getDate() + 7);
-        if (recurrence === 'MENSAL') nextDue.setMonth(dueDate.getMonth() + 1);
-        if (recurrence === 'TRIMESTRAL') nextDue.setMonth(dueDate.getMonth() + 3);
-        if (recurrence === 'ANUAL') nextDue.setFullYear(dueDate.getFullYear() + 1);
-        newTxList.push({
-          ...newTx,
-          id: `${id}-${i + 1}`,
-          data: dueDate.toISOString().slice(0, 10),
-          status: i === 0 ? newTx.status : 'AGENDADO',
-          custoFixoDetalhes: {
-            ...newTx.custoFixoDetalhes,
-            proximoVencimento: nextDue.toISOString().slice(0, 10),
-          },
-        });
-      }
+      // Custos fixos podem variar. Registra somente a competência informada;
+      // nunca materializa ou soma automaticamente os meses futuros.
+      newTxList = [newTx];
     }
 
     setTransactions((prev) => [...newTxList, ...prev]);
@@ -468,11 +578,43 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   };
 
+  const getNextOccurrenceDate = (dateStr: string, recurrence: RecorrenciaTipo): string => {
+    const d = new Date(`${dateStr}T12:00:00`);
+    if (recurrence === 'SEMANAL') {
+      d.setDate(d.getDate() + 7);
+    } else if (recurrence === 'TRIMESTRAL') {
+      d.setMonth(d.getMonth() + 3);
+    } else if (recurrence === 'ANUAL') {
+      d.setFullYear(d.getFullYear() + 1);
+    } else { // MENSAL
+      d.setMonth(d.getMonth() + 1);
+    }
+    return d.toISOString().slice(0, 10);
+  };
+
   // Update Transaction
   const updateTransaction = (id: string, updated: Partial<Transaction>) => {
     const current = transactions.find((tx) => tx.id === id);
     if (!current) return;
-    const next = { ...current, ...updated };
+    let next = { ...current, ...updated };
+    if (next.origemFinanceira === 'CARTAO_CREDITO' && next.cartaoDetalhes) {
+      const card = cards.find((item) => item.id === next.cartaoDetalhes!.cartaoId);
+      const existingCompetence = card ? getTransactionInvoiceCompetence(current, card) : current.cartaoDetalhes?.competenciaFatura;
+      next = {
+        ...next,
+        cartaoDetalhes: {
+          ...next.cartaoDetalhes,
+          competenciaFatura: updated.cartaoDetalhes?.competenciaFatura
+            || (updated.data
+            ? calculateInvoiceCompetence(
+                next.data,
+                next.cartaoDetalhes.melhorDiaCompra || card?.fechamentoDia || 1,
+                next.cartaoDetalhes.diaVencimento || card?.vencimentoDia || 1
+              )
+            : existingCompetence),
+        },
+      };
+    }
     const deltaFor = (tx: Transaction) =>
       tx.status === 'PAGO' && tx.contaBancariaId
         ? tx.tipo === 'RECEITA' ? tx.valor : -tx.valor
@@ -486,7 +628,54 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
           : account;
       })
     );
-    setTransactions((prev) => prev.map((tx) => (tx.id === id ? next : tx)));
+
+    // Fixed cost propagation on PAGO transition
+    let nextTxList: Transaction[] = [];
+    if (
+      next.status === 'PAGO' &&
+      current.status !== 'PAGO' &&
+      next.origemFinanceira === 'CUSTO_FIXO' &&
+      next.custoFixoDetalhes?.ativo &&
+      next.custoFixoDetalhes.recorrencia !== 'UNICA'
+    ) {
+      const nextDate = getNextOccurrenceDate(next.data, next.custoFixoDetalhes.recorrencia);
+      const dataTermino = next.custoFixoDetalhes.dataTermino;
+      const hasReachedEnd = dataTermino && nextDate > dataTermino;
+      
+      if (!hasReachedEnd) {
+        const baseId = next.id.replace(/-\d+$/, '');
+        const nextMonthStr = nextDate.slice(0, 7);
+        const alreadyExists = transactions.some((t) =>
+          t.origemFinanceira === 'CUSTO_FIXO' &&
+          (t.id === baseId || t.id.startsWith(`${baseId}-`)) &&
+          t.data.startsWith(nextMonthStr)
+        );
+        
+        if (!alreadyExists) {
+          const match = next.id.match(/-(\d+)$/);
+          const currentIdx = match ? parseInt(match[1]) : 1;
+          const nextIdx = currentIdx + 1;
+          const nextId = `${baseId}-${nextIdx}`;
+          
+          const nextTx: Transaction = {
+            ...next,
+            id: nextId,
+            status: 'PENDENTE',
+            data: nextDate,
+            custoFixoDetalhes: {
+              ...next.custoFixoDetalhes,
+              proximoVencimento: getNextOccurrenceDate(nextDate, next.custoFixoDetalhes.recorrencia),
+            }
+          };
+          nextTxList.push(nextTx);
+        }
+      }
+    }
+
+    setTransactions((prev) => {
+      const updatedList = prev.map((tx) => (tx.id === id ? next : tx));
+      return [...nextTxList, ...updatedList];
+    });
   };
 
   // Delete Transaction
@@ -508,31 +697,98 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     }
   };
 
+  const deleteTransactions = async (ids: string[]): Promise<boolean> => {
+    const uniqueIds = Array.from(new Set(ids));
+    if (!uniqueIds.length) return true;
+    if (isSupabaseConfigured) {
+      const result = await supabaseApi.deleteByIds('transactions', uniqueIds);
+      if (!result.success) {
+        console.error('Erro ao excluir lançamentos:', result.error);
+        return false;
+      }
+    }
+    const removed = transactions.filter((tx) => uniqueIds.includes(tx.id));
+    const balanceReversals = new Map<string, number>();
+    removed.forEach((tx) => {
+      if (tx.status !== 'PAGO' || !tx.contaBancariaId) return;
+      const reversal = tx.tipo === 'RECEITA' ? -tx.valor : tx.valor;
+      balanceReversals.set(tx.contaBancariaId, (balanceReversals.get(tx.contaBancariaId) || 0) + reversal);
+    });
+    if (balanceReversals.size) {
+      setBankAccounts((accounts) => accounts.map((account) => ({
+        ...account,
+        saldo: account.saldo + (balanceReversals.get(account.id) || 0),
+      })));
+    }
+    setTransactions((previous) => previous.filter((tx) => !uniqueIds.includes(tx.id)));
+    return true;
+  };
+
   // Toggle Status
   const toggleTransactionStatus = (id: string) => {
-    setTransactions((prev) =>
-      prev.map((tx) => {
-        if (tx.id === id) {
-          const newStatus: TransactionStatus = tx.status === 'PAGO' ? 'PENDENTE' : 'PAGO';
+    setTransactions((prev) => {
+      const current = prev.find((tx) => tx.id === id);
+      if (!current) return prev;
+      
+      const newStatus: TransactionStatus = current.status === 'PAGO' ? 'PENDENTE' : 'PAGO';
 
-          // Update bank account if linked
-          if (tx.contaBancariaId) {
-            const isNowPaid = newStatus === 'PAGO';
-            const multiplier = isNowPaid ? 1 : -1;
-            const delta = (tx.tipo === 'RECEITA' ? tx.valor : -tx.valor) * multiplier;
+      // Update bank account if linked
+      if (current.contaBancariaId) {
+        const isNowPaid = newStatus === 'PAGO';
+        const multiplier = isNowPaid ? 1 : -1;
+        const delta = (current.tipo === 'RECEITA' ? current.valor : -current.valor) * multiplier;
 
-            setBankAccounts((accounts) =>
-              accounts.map((acc) =>
-                acc.id === tx.contaBancariaId ? { ...acc, saldo: acc.saldo + delta } : acc
-              )
-            );
+        setBankAccounts((accounts) =>
+          accounts.map((acc) =>
+            acc.id === current.contaBancariaId ? { ...acc, saldo: acc.saldo + delta } : acc
+          )
+        );
+      }
+
+      let nextTxList: Transaction[] = [];
+      if (
+        newStatus === 'PAGO' &&
+        current.origemFinanceira === 'CUSTO_FIXO' &&
+        current.custoFixoDetalhes?.ativo &&
+        current.custoFixoDetalhes.recorrencia !== 'UNICA'
+      ) {
+        const nextDate = getNextOccurrenceDate(current.data, current.custoFixoDetalhes.recorrencia);
+        const dataTermino = current.custoFixoDetalhes.dataTermino;
+        const hasReachedEnd = dataTermino && nextDate > dataTermino;
+        
+        if (!hasReachedEnd) {
+          const baseId = current.id.replace(/-\d+$/, '');
+          const nextMonthStr = nextDate.slice(0, 7);
+          const alreadyExists = prev.some((t) =>
+            t.origemFinanceira === 'CUSTO_FIXO' &&
+            (t.id === baseId || t.id.startsWith(`${baseId}-`)) &&
+            t.data.startsWith(nextMonthStr)
+          );
+          
+          if (!alreadyExists) {
+            const match = current.id.match(/-(\d+)$/);
+            const currentIdx = match ? parseInt(match[1]) : 1;
+            const nextIdx = currentIdx + 1;
+            const nextId = `${baseId}-${nextIdx}`;
+            
+            const nextTx: Transaction = {
+              ...current,
+              id: nextId,
+              status: 'PENDENTE',
+              data: nextDate,
+              custoFixoDetalhes: {
+                ...current.custoFixoDetalhes,
+                proximoVencimento: getNextOccurrenceDate(nextDate, current.custoFixoDetalhes.recorrencia),
+              }
+            };
+            nextTxList.push(nextTx);
           }
-
-          return { ...tx, status: newStatus };
         }
-        return tx;
-      })
-    );
+      }
+
+      const updatedList = prev.map((tx) => (tx.id === id ? { ...tx, status: newStatus } : tx));
+      return [...nextTxList, ...updatedList];
+    });
   };
 
   // Pay Contract Installment
@@ -577,7 +833,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   };
 
   // Pay Card Invoice
-  const payCardInvoice = (cardId: string) => {
+  const payCardInvoice = (cardId: string, billingMonth?: string) => {
     const card = cards.find((c) => c.id === cardId);
     if (!card) return;
 
@@ -587,23 +843,19 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
       return;
     }
 
-    const valorFatura = card.limiteUtilizado;
+    const targetInvoice = billingMonth
+      ? getOpenCardInvoices(transactions, cards).find((invoice) => invoice.cardId === cardId && invoice.competence === billingMonth)
+      : getOpenCardInvoice(transactions, cards, cardId);
+    const invoiceTransactions = targetInvoice?.transactions || [];
+    const valorFatura = invoiceTransactions.reduce((sum, tx) => sum + tx.valor, 0);
     if (valorFatura <= 0) return;
-
-    // Reset card limit used
-    setCards((prev) =>
-      prev.map((c) => (c.id === cardId ? { ...c, limiteUtilizado: 0 } : c))
-    );
+    const invoiceTransactionIds = new Set(invoiceTransactions.map((tx) => tx.id));
 
     // Os próprios lançamentos do cartão formam o fluxo único. A quitação
     // baixa esses lançamentos na conta, sem criar uma segunda despesa.
     setTransactions((prev) =>
       prev.map((tx) => {
-        if (
-          tx.origemFinanceira === 'CARTAO_CREDITO' &&
-          tx.cartaoDetalhes?.cartaoId === cardId &&
-          tx.status !== 'PAGO'
-        ) {
+        if (invoiceTransactionIds.has(tx.id)) {
           return {
             ...tx,
             status: 'PAGO',
@@ -725,9 +977,11 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         addContract,
         updateContract,
         deleteContract,
+        deleteContractWithTransactions,
         addTransaction,
         updateTransaction,
         deleteTransaction,
+        deleteTransactions,
         toggleTransactionStatus,
         payContractInstallment,
         payCardInvoice,
