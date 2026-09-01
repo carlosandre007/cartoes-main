@@ -19,13 +19,19 @@ import {
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
 import { parseCSVToCardPurchases, parseRowsToCardPurchases } from '../utils/importExport';
-import { addMonthsToCompetence, calculateInvoiceCompetence, getOpenCardInvoice, getOpenCardInvoices, transactionBelongsToCard } from '../utils/financialCalculations';
+import { addMonthsToCompetence, getCardInvoices, getCurrentInvoiceCompetence, getInvoiceStatementAmount, getOpenCardInvoice, getOpenCardInvoices, transactionBelongsToCard } from '../utils/financialCalculations';
 import { CurrencyInput } from '../components/CurrencyInput';
 
 const DEFAULT_CARD_EXPENSE_CATEGORIES = ['LOC MOTTUS', 'RASTREAR', 'AP AURORA', 'ANDRE', 'ALANE'];
 
+export const InvoiceTotalValue: React.FC<{ amount: number; className?: string }> = ({ amount, className = '' }) => (
+  <span className={className}>
+    R$ {amount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+  </span>
+);
+
 export const CardsView: React.FC = () => {
-  const { cards, transactions, payCardInvoice, openNewTransactionModal, addCard, updateCard, deleteCard, addTransaction, updateTransaction, deleteTransaction } = useFinancial();
+  const { cards, transactions, payCardInvoice, openNewTransactionModal, addCard, updateCard, deleteCard, addTransaction, updateTransaction, saveTransactionBatch, deleteTransaction } = useFinancial();
   const importInputRef = useRef<HTMLInputElement>(null);
   const [selectedCardId, setSelectedCardId] = useState<string>(cards[0]?.id || '');
   const [isImportOpen, setIsImportOpen] = useState(false);
@@ -43,9 +49,9 @@ export const CardsView: React.FC = () => {
   ]);
   const [isAddCardOpen, setIsAddCardOpen] = useState(false);
   const [isBulkEditOpen, setIsBulkEditOpen] = useState(false);
-  const [bulkEditRows, setBulkEditRows] = useState<Array<{ id: string; transactionIds: string[]; parcelasTotal: number; parcelasOriginais: number; possuiPagamento: boolean; descricao: string; valor: string; valorOriginal: number; data: string; categoria: string }>>([]);
-  const repairedBulkCompetences = useRef(new Set<string>());
+  const [bulkEditRows, setBulkEditRows] = useState<Array<{ id: string; transactionIds: string[]; parcelasTotal: number; parcelasOriginais: number; possuiPagamento: boolean; recorrente: boolean; descricao: string; valor: string; valorOriginal: number; data: string; categoria: string; observacao: string; originalValues?: { descricao: string; valor: number; data: string; categoria: string; observacao: string; parcelasTotal: number; recorrente: boolean } }>>([]);
   const [bulkEditSearch, setBulkEditSearch] = useState('');
+  const [isSavingBulkEdit, setIsSavingBulkEdit] = useState(false);
   const [newCardForm, setNewCardForm] = useState({
     nome: '',
     bandeira: 'VISA' as const,
@@ -63,28 +69,6 @@ export const CardsView: React.FC = () => {
       setSelectedCardId(cards[0].id);
     }
   }, [cards, selectedCardId]);
-
-  useEffect(() => {
-    const card = cards.find((item) => item.id === selectedCardId);
-    if (!card || repairedBulkCompetences.current.has(card.id)) return;
-    const mismatched = transactions.filter((tx) =>
-      transactionBelongsToCard(tx, cards, card.id) &&
-      tx.cartaoDetalhes?.competenciaFatura &&
-      !tx.cartaoDetalhes.competenciaDefinidaEmLote &&
-      tx.cartaoDetalhes.competenciaFatura !== tx.data.slice(0, 7)
-    );
-    // Corrige automaticamente lotes gravados pela versão anterior, que deslocava
-    // várias primeiras parcelas para a competência seguinte.
-    if (mismatched.length >= 5) {
-      repairedBulkCompetences.current.add(card.id);
-      mismatched.forEach((tx) => updateTransaction(tx.id, {
-        cartaoDetalhes: {
-          ...tx.cartaoDetalhes!, cartaoId: card.id, cartaoNome: card.nome,
-          competenciaFatura: tx.data.slice(0, 7), competenciaDefinidaEmLote: true,
-        },
-      }));
-    }
-  }, [cards, selectedCardId, transactions]);
 
   const handleCreateCard = (e: React.FormEvent) => {
     e.preventDefault();
@@ -126,11 +110,14 @@ export const CardsView: React.FC = () => {
         parcelasTotal: 1,
         parcelasOriginais: 1,
         possuiPagamento: false,
+        recorrente: false,
         descricao: '',
         valor: '0',
         valorOriginal: 0,
         data: new Date().toISOString().slice(0, 10),
         categoria: 'LOC MOTTUS',
+        observacao: '',
+        originalValues: undefined,
       },
       ...rows,
     ]);
@@ -150,128 +137,155 @@ export const CardsView: React.FC = () => {
 
   const openBulkEdit = () => {
     if (!selectedCard) return;
-    const cardItems = transactions
-      .filter((tx) => transactionBelongsToCard(tx, cards, selectedCard.id))
-      .sort((a, b) => a.data.localeCompare(b.data));
+    const cardItems = transactions.filter((tx) => transactionBelongsToCard(tx, cards, selectedCard.id));
     const groups = new Map<string, typeof cardItems>();
     cardItems.forEach((tx) => {
       const total = tx.cartaoDetalhes?.parcelasTotal || 1;
-      const baseId = total > 1 ? tx.id.replace(/-\d+$/, '') : tx.id;
+      const baseId = tx.cartaoDetalhes?.recorrente && tx.cartaoDetalhes.recorrenciaId
+        ? tx.cartaoDetalhes.recorrenciaId
+        : total > 1 ? tx.id.replace(/-\d+$/, '') : tx.id;
       groups.set(baseId, [...(groups.get(baseId) || []), tx]);
     });
     const rows = Array.from(groups.entries()).map(([id, items]) => {
       const ordered = [...items].sort((a, b) => (a.cartaoDetalhes?.parcelaAtual || 1) - (b.cartaoDetalhes?.parcelaAtual || 1));
-      const first = ordered[0];
+      const isRecurring = items.some((tx) => tx.cartaoDetalhes?.recorrente);
+      const first = isRecurring
+        ? [...ordered].reverse().find((tx) => tx.status !== 'PAGO' && tx.status !== 'CANCELADO') || ordered[ordered.length - 1]
+        : ordered[0];
       const firstInstallment = first.cartaoDetalhes?.parcelaAtual || 1;
       const baseDate = new Date(`${first.data}T12:00:00`);
       baseDate.setMonth(baseDate.getMonth() - (firstInstallment - 1));
+      const purchaseDate = first.cartaoDetalhes?.dataCompra || baseDate.toISOString().slice(0, 10);
+      const description = first.descricao.replace(/\s*\(\d+\/\d+\)\s*$/, '');
+      const observation = first.observacao || '';
       return {
         id, transactionIds: ordered.map((tx) => tx.id), parcelasTotal: first.cartaoDetalhes?.parcelasTotal || 1,
         parcelasOriginais: first.cartaoDetalhes?.parcelasTotal || 1, possuiPagamento: ordered.some((tx) => tx.status === 'PAGO'),
-        descricao: first.descricao.replace(/\s*\(\d+\/\d+\)\s*$/, ''), valor: String(first.valor), valorOriginal: first.valor,
-        data: first.cartaoDetalhes?.dataCompra || baseDate.toISOString().slice(0, 10), categoria: first.categoria,
+        recorrente: isRecurring,
+        descricao: description, valor: String(first.valor), valorOriginal: first.valor,
+        data: purchaseDate, categoria: first.categoria, observacao: observation,
+        originalValues: { descricao: description, valor: first.valor, data: purchaseDate, categoria: first.categoria, observacao: observation, parcelasTotal: first.cartaoDetalhes?.parcelasTotal || 1, recorrente: isRecurring },
       };
-    }).sort((a, b) => b.data.localeCompare(a.data)); // Sort descending by date
+    }).sort((a, b) => b.data.localeCompare(a.data));
     setBulkEditSearch('');
     setBulkEditRows(rows);
     setIsBulkEditOpen(true);
   };
 
-  const saveBulkEdit = () => {
+  const saveBulkEdit = async () => {
     const invalid = bulkEditRows.some((row) => !row.descricao.trim() || !row.data || !Number.isFinite(Number(row.valor.replace(',', '.'))) || !Number.isInteger(row.parcelasTotal) || row.parcelasTotal < 1);
     if (invalid) { alert('Revise as descrições, valores e datas antes de salvar.'); return; }
+    const upserts: typeof transactions = [];
+    const deletedIds: string[] = [];
+    const samePersistedData = (left: typeof transactions[number], right: typeof transactions[number]) =>
+      JSON.stringify(left) === JSON.stringify(right);
+
     bulkEditRows.forEach((row) => {
       const isNew = !row.transactionIds || row.transactionIds.length === 0;
       if (isNew) {
-        const firstCompetence = calculateInvoiceCompetence(row.data, selectedCard.fechamentoDia, selectedCard.vencimentoDia);
-        addTransaction({
-          tipo: 'DESPESA',
-          descricao: row.descricao.trim(),
-          valor: Number(row.valor.replace(',', '.')) * row.parcelasTotal,
-          data: row.data,
-          categoria: row.categoria.trim() || 'Outros',
-          empresa: 'Pessoal',
-          centroCusto: 'Indefinido',
-          formaPagamento: 'Cartão de Crédito',
-          origemFinanceira: 'CARTAO_CREDITO',
-          status: 'PENDENTE',
-          observacao: row.parcelasTotal > 1 ? `${row.parcelasTotal} parcela(s) de R$ ${Number(row.valor.replace(',', '.')).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '',
-          cartaoDetalhes: {
-            cartaoId: selectedCard.id,
-            cartaoNome: selectedCard.nome,
-            parcelaAtual: 1,
-            parcelasTotal: row.parcelasTotal,
-            melhorDiaCompra: selectedCard.fechamentoDia,
-            diaVencimento: selectedCard.vencimentoDia,
-            dataCompra: row.data,
-            competenciaFatura: firstCompetence,
-            competenciaDefinidaEmLote: true,
-          },
-        }, row.parcelasTotal > 1);
-        return;
-      }
-
-      if (row.parcelasTotal !== row.parcelasOriginais) {
-        const existingInstallments = row.transactionIds
-          .map((transactionId) => transactions.find((tx) => tx.id === transactionId))
-          .filter((tx): tx is NonNullable<typeof tx> => Boolean(tx))
-          .sort((a, b) => (a.cartaoDetalhes?.parcelaAtual || 1) - (b.cartaoDetalhes?.parcelaAtual || 1));
-        const original = existingInstallments[0];
-        if (!original) return;
-        const installmentValue = Number(row.valor.replace(',', '.'));
-        const firstCompetence = calculateInvoiceCompetence(row.data, selectedCard.fechamentoDia, selectedCard.vencimentoDia);
-
-        existingInstallments
-          .filter((tx) => (tx.cartaoDetalhes?.parcelaAtual || 1) > row.parcelasTotal)
-          .forEach((tx) => deleteTransaction(tx.id));
-
-        for (let installment = 1; installment <= row.parcelasTotal; installment += 1) {
-          const current = existingInstallments.find((tx) => (tx.cartaoDetalhes?.parcelaAtual || 1) === installment);
-          const updatedInstallment = {
-            ...original,
-            descricao: row.parcelasTotal > 1 ? `${row.descricao.trim()} (${installment}/${row.parcelasTotal})` : row.descricao.trim(),
-            valor: installmentValue,
+        const firstCompetence = getCurrentInvoiceCompetence();
+        const baseId = `tx-bulk-${globalThis.crypto?.randomUUID?.() || Date.now()}`;
+        const generatedInstallments = row.recorrente ? 1 : row.parcelasTotal;
+        const recurrenceId = row.recorrente ? `rec-card-${globalThis.crypto?.randomUUID?.() || Date.now()}` : undefined;
+        for (let installment = 1; installment <= generatedInstallments; installment += 1) {
+          upserts.push({
+            id: row.parcelasTotal > 1 ? `${baseId}-${installment}` : baseId,
+            tipo: 'DESPESA',
+            descricao: generatedInstallments > 1 ? `${row.descricao.trim()} (${installment}/${generatedInstallments})` : row.descricao.trim(),
+            valor: Number(row.valor.replace(',', '.')),
             data: row.data,
             categoria: row.categoria.trim() || 'Outros',
-            status: current?.status || 'PENDENTE' as const,
+            empresa: 'Pessoal', centroCusto: 'Indefinido', formaPagamento: 'Cartão de Crédito',
+            origemFinanceira: 'CARTAO_CREDITO', status: installment === 1 ? 'PENDENTE' : 'AGENDADO',
+            observacao: row.observacao.trim(),
             cartaoDetalhes: {
-              ...original.cartaoDetalhes,
               cartaoId: selectedCard.id, cartaoNome: selectedCard.nome,
+              parcelaAtual: installment, parcelasTotal: row.recorrente ? undefined : generatedInstallments,
               melhorDiaCompra: selectedCard.fechamentoDia, diaVencimento: selectedCard.vencimentoDia,
               dataCompra: row.data,
-              parcelaAtual: installment, parcelasTotal: row.parcelasTotal,
               competenciaFatura: addMonthsToCompetence(firstCompetence, installment - 1),
               competenciaDefinidaEmLote: true,
+              recorrente: row.recorrente || undefined,
+              recorrenciaId: recurrenceId,
+              recorrenciaAtiva: row.recorrente || undefined,
             },
-          };
-          if (current) updateTransaction(current.id, updatedInstallment);
-          else addTransaction(updatedInstallment, false);
+          });
         }
         return;
       }
-      row.transactionIds.forEach((transactionId, index) => {
-        const current = transactions.find((tx) => tx.id === transactionId);
-        const installment = current?.cartaoDetalhes?.parcelaAtual || index + 1;
-        const firstCompetence = calculateInvoiceCompetence(row.data, selectedCard.fechamentoDia, selectedCard.vencimentoDia);
-        updateTransaction(transactionId, {
-          descricao: row.parcelasTotal > 1 ? `${row.descricao.trim()} (${installment}/${row.parcelasTotal})` : row.descricao.trim(),
-          valor: Number(row.valor.replace(',', '.')) === row.valorOriginal ? (current?.valor ?? row.valorOriginal) : Number(row.valor.replace(',', '.')),
+
+      const originalValues = row.originalValues;
+      const rowWasEdited = !originalValues
+        || row.descricao.trim() !== originalValues.descricao
+        || Number(row.valor.replace(',', '.')) !== originalValues.valor
+        || row.data !== originalValues.data
+        || row.categoria.trim() !== originalValues.categoria
+        || row.observacao.trim() !== originalValues.observacao
+        || row.parcelasTotal !== originalValues.parcelasTotal
+        || row.recorrente !== originalValues.recorrente;
+      if (!rowWasEdited) return;
+
+      const allExistingInstallments = row.transactionIds
+        .map((transactionId) => transactions.find((tx) => tx.id === transactionId))
+        .filter((tx): tx is NonNullable<typeof tx> => Boolean(tx))
+        .sort((a, b) => (a.cartaoDetalhes?.parcelaAtual || 1) - (b.cartaoDetalhes?.parcelaAtual || 1));
+      const wasRecurring = Boolean(row.originalValues?.recorrente);
+      const existingInstallments = row.recorrente || wasRecurring
+        ? allExistingInstallments.filter((tx) => tx.status !== 'PAGO' && tx.status !== 'CANCELADO')
+        : allExistingInstallments;
+      const original = existingInstallments[0] || allExistingInstallments[0];
+      if (!original) return;
+      const firstCompetence = getCurrentInvoiceCompetence();
+      const targetInstallments = row.recorrente ? 1 : row.parcelasTotal;
+      const recurrenceId = row.recorrente
+        ? original.cartaoDetalhes?.recorrenciaId || `rec-card-${globalThis.crypto?.randomUUID?.() || Date.now()}`
+        : undefined;
+      existingInstallments
+        .filter((tx) => (tx.cartaoDetalhes?.parcelaAtual || 1) > targetInstallments && tx.status !== 'PAGO')
+        .forEach((tx) => deletedIds.push(tx.id));
+
+      for (let installment = 1; installment <= targetInstallments; installment += 1) {
+        const current = existingInstallments.find((tx) => (tx.cartaoDetalhes?.parcelaAtual || 1) === installment);
+        const target = {
+          ...(current || original),
+          id: current?.id || `${row.id}-${installment}`,
+          descricao: targetInstallments > 1 ? `${row.descricao.trim()} (${installment}/${targetInstallments})` : row.descricao.trim(),
+          valor: Number(row.valor.replace(',', '.')),
           data: row.data,
           categoria: row.categoria.trim() || 'Outros',
+          observacao: row.observacao.trim(),
+          status: current?.status || 'AGENDADO' as const,
           cartaoDetalhes: {
-            ...current?.cartaoDetalhes,
+            ...(current?.cartaoDetalhes || original.cartaoDetalhes),
             cartaoId: selectedCard.id, cartaoNome: selectedCard.nome,
             melhorDiaCompra: selectedCard.fechamentoDia, diaVencimento: selectedCard.vencimentoDia,
-            dataCompra: row.data,
-            parcelaAtual: installment, parcelasTotal: row.parcelasTotal,
+            dataCompra: row.data, parcelaAtual: installment, parcelasTotal: row.recorrente ? undefined : targetInstallments,
             competenciaFatura: addMonthsToCompetence(firstCompetence, installment - 1),
             competenciaDefinidaEmLote: true,
+            recorrente: row.recorrente || undefined,
+            recorrenciaId: recurrenceId,
+            recorrenciaAtiva: row.recorrente || undefined,
           },
-        });
-      });
+        };
+        if (!current || !samePersistedData(current, target)) upserts.push(target);
+      }
     });
+
+    if (!upserts.length && !deletedIds.length) {
+      setIsBulkEditOpen(false);
+      alert('Nenhuma alteração para salvar.');
+      return;
+    }
+    setIsSavingBulkEdit(true);
+    const result = await saveTransactionBatch(upserts, deletedIds);
+    setIsSavingBulkEdit(false);
+    if (!result.success) {
+      console.error('Falha ao salvar lançamentos em lote:', result.error);
+      alert(`Não foi possível salvar as alterações no banco. ${String((result.error as any)?.message || result.error || '')}`);
+      return;
+    }
     setIsBulkEditOpen(false);
-    alert(`${bulkEditRows.length} itens atualizados com sucesso.`);
+    alert(`${upserts.length} lançamento(s) confirmado(s) no banco com sucesso.`);
   };
 
   const handleDeleteCardTransaction = (transactionId: string) => {
@@ -412,20 +426,25 @@ export const CardsView: React.FC = () => {
         const baseId = total > 1 ? tx.id.replace(/-\d+$/, '') : tx.id;
         groups.set(baseId, [...(groups.get(baseId) || []), tx]);
       });
-    return Array.from(groups.values()).map((items) =>
-      [...items].sort((a, b) => (a.cartaoDetalhes?.parcelaAtual || 1) - (b.cartaoDetalhes?.parcelaAtual || 1))[0]
-    );
+    return Array.from(groups.values()).map((items) => {
+      const first = [...items].sort((a, b) => (a.cartaoDetalhes?.parcelaAtual || 1) - (b.cartaoDetalhes?.parcelaAtual || 1))[0];
+      if (first.cartaoDetalhes?.dataCompra) return first;
+      const firstInstallment = first.cartaoDetalhes?.parcelaAtual || 1;
+      const purchaseDate = new Date(`${first.data}T12:00:00`);
+      purchaseDate.setMonth(purchaseDate.getMonth() - (firstInstallment - 1));
+      return { ...first, cartaoDetalhes: { ...first.cartaoDetalhes!, dataCompra: purchaseDate.toISOString().slice(0, 10) } };
+    });
   })().sort((a, b) => {
-    const dateComparison = (b.cartaoDetalhes?.dataCompra || b.data)
+    return (b.cartaoDetalhes?.dataCompra || b.data)
       .localeCompare(a.cartaoDetalhes?.dataCompra || a.data);
-    return dateComparison || b.id.localeCompare(a.id);
   });
   const selectedInvoiceMonth = selectedInvoice
     ? new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' })
         .format(new Date(`${selectedInvoice.competence}-01T12:00:00Z`))
     : '';
 
-  const totalFaturaAtual = selectedInvoice?.amount || 0;
+  const totalFaturaAtual = getInvoiceStatementAmount(selectedInvoice);
+  const saldoFaturaAtual = selectedInvoice?.outstandingAmount || 0;
   const totalEmAbertoCartao = selectedCard
     ? getOpenCardInvoices(transactions, cards).filter((invoice) => invoice.cardId === selectedCard.id).reduce((sum, invoice) => sum + invoice.amount, 0)
     : 0;
@@ -784,7 +803,7 @@ export const CardsView: React.FC = () => {
                 row.descricao.toLowerCase().includes(bulkEditSearch.toLowerCase()) ||
                 row.categoria.toLowerCase().includes(bulkEditSearch.toLowerCase())
               ).map((row, index) => (
-                <div key={row.id} className="grid grid-cols-1 md:grid-cols-[auto_2fr_1fr_0.8fr_1.2fr_1.2fr_auto] gap-2 items-center p-3 rounded-xl bg-zinc-900/60 border border-zinc-800">
+                <div key={row.id} className="grid grid-cols-1 md:grid-cols-[auto_2fr_1fr_0.8fr_1.2fr_1.5fr_auto] gap-2 items-center p-3 rounded-xl bg-zinc-900/60 border border-zinc-800">
                   <span className="text-[10px] text-zinc-500 font-mono w-6">{index + 1}</span>
                   <div className="space-y-1">
                     <input value={row.descricao} onChange={(event) => setBulkEditRows((rows) => rows.map((item) => item.id === row.id ? { ...item, descricao: event.target.value } : item))} className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100" />
@@ -793,9 +812,16 @@ export const CardsView: React.FC = () => {
                   <CurrencyInput
                     value={parseFloat(row.valor.replace(',', '.')) || 0}
                     onChange={(numVal) => setBulkEditRows((rows) => rows.map((item) => item.id === row.id ? { ...item, valor: String(numVal) } : item))}
-                    className="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 font-mono"
+                    allowNegative
+                    className={`px-3 py-2 bg-zinc-950 border rounded-lg text-xs font-mono ${Number(row.valor.replace(',', '.')) < 0 ? 'border-emerald-500/40 text-emerald-400' : 'border-zinc-800 text-zinc-100'}`}
                   />
-                  <label className="text-[10px] text-zinc-500">Parcelas<input type="number" min="1" max="240" value={row.parcelasTotal} onChange={(event) => setBulkEditRows((rows) => rows.map((item) => item.id === row.id ? { ...item, parcelasTotal: Math.max(1, Math.trunc(Number(event.target.value) || 1)) } : item))} className="mt-1 w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 font-mono" /></label>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-zinc-500">Parcelas<input type="number" min="1" max="240" disabled={row.recorrente} value={row.recorrente ? 1 : row.parcelasTotal} onChange={(event) => setBulkEditRows((rows) => rows.map((item) => item.id === row.id ? { ...item, parcelasTotal: Math.max(1, Math.trunc(Number(event.target.value) || 1)) } : item))} className="mt-1 w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 font-mono disabled:opacity-50" /></label>
+                    <label className="flex items-center gap-1.5 text-[10px] text-amber-300 cursor-pointer">
+                      <input type="checkbox" checked={row.recorrente} onChange={(event) => setBulkEditRows((rows) => rows.map((item) => item.id === row.id ? { ...item, recorrente: event.target.checked, parcelasTotal: event.target.checked ? 1 : item.parcelasTotal } : item))} />
+                      Recorrente mensal
+                    </label>
+                  </div>
                   <label className="text-[10px] text-zinc-500">Data da compra<input type="date" value={row.data} onChange={(event) => setBulkEditRows((rows) => rows.map((item) => item.id === row.id ? { ...item, data: event.target.value } : item))} className="mt-1 w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100" /></label>
                   <label className="text-[10px] text-zinc-500">Categoria<select value={row.categoria} onChange={(event) => setBulkEditRows((rows) => rows.map((item) => item.id === row.id ? { ...item, categoria: event.target.value } : item))} className="mt-1 w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100 cursor-pointer">
                     {!cardExpenseCategories.includes(row.categoria) && <option value={row.categoria}>{row.categoria || 'Selecione'}</option>}
@@ -832,7 +858,7 @@ export const CardsView: React.FC = () => {
               </button>
               <div className="flex gap-2">
                 <button onClick={() => setIsBulkEditOpen(false)} className="px-4 py-2.5 rounded-xl bg-zinc-900 text-zinc-300 text-xs font-bold">Cancelar</button>
-                <button onClick={saveBulkEdit} className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 text-zinc-950 text-xs font-extrabold flex items-center gap-2"><Save className="w-4 h-4" />Salvar todos</button>
+                <button disabled={isSavingBulkEdit} onClick={saveBulkEdit} className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 text-zinc-950 text-xs font-extrabold flex items-center gap-2 disabled:opacity-60"><Save className="w-4 h-4" />{isSavingBulkEdit ? 'Salvando no banco...' : 'Salvar todos'}</button>
               </div>
             </div>
           </div>
@@ -843,7 +869,13 @@ export const CardsView: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {cards.map((card) => {
           const isSelected = card.id === selectedCardId;
-          const cardFatura = getOpenCardInvoice(transactions, cards, card.id)?.amount || 0;
+          const openInvoice = getOpenCardInvoice(transactions, cards, card.id);
+          const latestClosedInvoice = getCardInvoices(transactions, cards)
+            .filter((invoice) => invoice.cardId === card.id && invoice.status === 'PAGO')
+            .at(-1);
+          const cardInvoice = openInvoice || latestClosedInvoice;
+          const cardFatura = getInvoiceStatementAmount(cardInvoice);
+          const cardSaldo = cardInvoice?.outstandingAmount || 0;
 
           return (
             <div
@@ -893,10 +925,21 @@ export const CardsView: React.FC = () => {
               {/* Fatura & Limite */}
               <div className="flex justify-between items-end border-t border-amber-500/20 pt-4 text-xs font-mono">
                 <div>
-                  <span className="text-[10px] text-zinc-400 block font-sans">Fatura Atual</span>
-                  <span className="font-bold text-amber-400 text-sm">
-                    R$ {cardFatura.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                  <span className="text-[10px] text-zinc-400 block font-sans">
+                    {cardInvoice?.status === 'PAGO' ? 'Última Fatura Fechada' : 'Fatura em Aberto'}
                   </span>
+                  <InvoiceTotalValue
+                    amount={cardFatura}
+                    className={`font-bold text-sm ${cardFatura < 0 ? 'text-emerald-400' : 'text-amber-400'}`}
+                  />
+                  <span className={`mt-0.5 text-[9px] font-sans font-bold block ${cardInvoice?.status === 'PAGO' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {cardInvoice?.status === 'PAGO' ? 'FECHADA' : cardInvoice ? 'EM ABERTO' : 'SEM LANÇAMENTOS'}
+                  </span>
+                  {cardInvoice?.status === 'PENDENTE' && cardSaldo !== cardFatura && (
+                    <span className="mt-0.5 text-[9px] font-sans text-zinc-300 block">
+                      Saldo em aberto: R$ {cardSaldo.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                    </span>
+                  )}
                 </div>
 
                 <div className="text-right">
@@ -944,13 +987,13 @@ export const CardsView: React.FC = () => {
             {/* Pay Invoice Button */}
             <div className="pt-2 border-t border-zinc-900 space-y-3">
               <button
-                disabled={!selectedCard || totalFaturaAtual <= 0}
+                disabled={!selectedCard || saldoFaturaAtual <= 0}
                 onClick={() => selectedCard && payCardInvoice(selectedCard.id, selectedInvoice?.competence)}
                 className="w-full py-3 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-600 hover:from-amber-400 hover:to-amber-500 disabled:opacity-50 text-zinc-950 font-black text-xs rounded-xl shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer"
               >
                 <CheckCircle className="w-4 h-4" />
                 <span>
-                  Pagar Fatura{selectedInvoiceMonth ? ` de ${selectedInvoiceMonth}` : ''} com 1-Clique (R$ {totalFaturaAtual.toLocaleString('pt-BR')})
+                  Pagar Fatura{selectedInvoiceMonth ? ` de ${selectedInvoiceMonth}` : ''} com 1-Clique (R$ {saldoFaturaAtual.toLocaleString('pt-BR')})
                 </span>
               </button>
               <p className="text-[11px] text-zinc-500 text-center">
@@ -1016,7 +1059,7 @@ export const CardsView: React.FC = () => {
                   <div className="space-y-1">
                     <div className="font-bold text-xs text-zinc-200">{tx.descricao}</div>
                     <div className="text-[11px] text-zinc-400 font-mono">
-                      Compra: {tx.cartaoDetalhes?.dataCompra || tx.data} • {tx.categoria}
+                      Data da compra: {tx.cartaoDetalhes?.dataCompra || tx.data} • {tx.categoria}
                       {tx.cartaoDetalhes?.parcelasTotal && (
                         <span className="text-amber-400 ml-2">
                           ({tx.cartaoDetalhes.parcelasTotal}x)
@@ -1026,7 +1069,7 @@ export const CardsView: React.FC = () => {
                   </div>
 
                   <div className="flex items-center gap-3 shrink-0">
-                    <div className="text-right font-mono font-bold text-amber-400 text-sm">
+                    <div className={`text-right font-mono font-bold text-sm ${tx.valor < 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
                       R$ {tx.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                     </div>
                     <button

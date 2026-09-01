@@ -9,10 +9,10 @@ import {
   ViewTab,
   TransactionStatus,
   OrigemFinanceira,
-  RecorrenciaTipo,
 } from '../types';
 import { isSupabaseConfigured, supabaseApi } from '../lib/supabase';
-import { addMonthsToCompetence, calculateInvoiceCompetence, getConsolidatedFlowItems, getInvoiceDueDate, getOpenCardInvoice, getOpenCardInvoices, getTransactionInvoiceCompetence, resolveTransactionCard } from '../utils/financialCalculations';
+import { addMonthsToCompetence, getConsolidatedFlowItems, getCurrentInvoiceCompetence, getInvoiceDueDate, getOpenCardInvoice, getOpenCardInvoices, getTransactionInvoiceCompetence, resolveTransactionCard } from '../utils/financialCalculations';
+import { createNextFixedCostOccurrences, getFixedCostRecurrenceId } from '../utils/fixedCostRecurrence';
 
 interface FinancialContextType {
   transactions: Transaction[];
@@ -55,6 +55,7 @@ interface FinancialContextType {
   deleteContractWithTransactions: (id: string) => Promise<boolean>;
   addTransaction: (tx: Omit<Transaction, 'id'>, generateInstallments?: boolean) => void;
   updateTransaction: (id: string, updated: Partial<Transaction>) => void;
+  saveTransactionBatch: (upserts: Transaction[], deletedIds?: string[]) => Promise<{ success: boolean; error?: unknown }>;
   deleteTransaction: (id: string) => void;
   deleteTransactions: (ids: string[]) => Promise<boolean>;
   toggleTransactionStatus: (id: string) => void;
@@ -127,6 +128,8 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   const [goals, setGoals] = useState<FinancialGoal[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const hasLoadedRemoteData = useRef(!isSupabaseConfigured);
+  const skipNextTransactionSync = useRef(false);
+  const transactionSyncQueue = useRef<Promise<unknown>>(Promise.resolve());
 
   // Supabase Initial Sync
   useEffect(() => {
@@ -163,7 +166,18 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   useEffect(() => {
     localStorage.setItem(LOCAL_STORAGE_TX_KEY, JSON.stringify(transactions));
     if (isSupabaseConfigured && hasLoadedRemoteData.current) {
-      supabaseApi.upsertTransactions(transactions);
+      if (skipNextTransactionSync.current) {
+        skipNextTransactionSync.current = false;
+        return;
+      }
+      const snapshot = transactions.map((tx) => ({ ...tx }));
+      transactionSyncQueue.current = transactionSyncQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          const result = await supabaseApi.upsertTransactions(snapshot);
+          if (!result.success) throw result.error;
+        })
+        .catch((error) => console.error('Erro ao sincronizar lançamentos:', error));
     }
   }, [transactions]);
 
@@ -484,16 +498,19 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   const addTransaction = (txData: Omit<Transaction, 'id'>, generateInstallments = false) => {
     const id = createId('tx');
     let newTx: Transaction = { ...txData, id };
+    if (newTx.origemFinanceira === 'CUSTO_FIXO' && newTx.custoFixoDetalhes) {
+      newTx = {
+        ...newTx,
+        custoFixoDetalhes: { ...newTx.custoFixoDetalhes, recorrenciaId: newTx.custoFixoDetalhes.recorrenciaId || `fixed-${id}` },
+      };
+    }
     if (newTx.origemFinanceira === 'CARTAO_CREDITO' && newTx.cartaoDetalhes) {
-      const card = cards.find((item) => item.id === newTx.cartaoDetalhes!.cartaoId);
-      const closingDay = newTx.cartaoDetalhes.melhorDiaCompra || card?.fechamentoDia || 1;
-      const dueDay = newTx.cartaoDetalhes.diaVencimento || card?.vencimentoDia || 1;
       newTx = {
         ...newTx,
         cartaoDetalhes: {
           ...newTx.cartaoDetalhes,
           dataCompra: newTx.cartaoDetalhes.dataCompra || newTx.data,
-          competenciaFatura: newTx.cartaoDetalhes.competenciaFatura || calculateInvoiceCompetence(newTx.data, closingDay, dueDay),
+          competenciaFatura: newTx.cartaoDetalhes.competenciaFatura || getCurrentInvoiceCompetence(),
         },
       };
     }
@@ -560,7 +577,18 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
       newTxList = [newTx];
     }
 
-    setTransactions((prev) => [...newTxList, ...prev]);
+    setTransactions((prev) => {
+      // Uma recorrência futura só nasce depois que a ocorrência atual foi paga.
+      // Isso também cobre o cadastro feito diretamente com status PAGO.
+      const persisted = [...newTxList, ...prev];
+      const paidFixedCosts = newTxList.filter((tx) =>
+        tx.status === 'PAGO' &&
+        tx.origemFinanceira === 'CUSTO_FIXO' &&
+        tx.custoFixoDetalhes?.ativo &&
+        tx.custoFixoDetalhes.recorrencia !== 'UNICA'
+      );
+      return [...createNextFixedCostOccurrences(paidFixedCosts, persisted), ...persisted];
+    });
 
     // Automatic synchronizations without data duplication
     // 1. Update bank balance if paid
@@ -578,20 +606,6 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   };
 
-  const getNextOccurrenceDate = (dateStr: string, recurrence: RecorrenciaTipo): string => {
-    const d = new Date(`${dateStr}T12:00:00`);
-    if (recurrence === 'SEMANAL') {
-      d.setDate(d.getDate() + 7);
-    } else if (recurrence === 'TRIMESTRAL') {
-      d.setMonth(d.getMonth() + 3);
-    } else if (recurrence === 'ANUAL') {
-      d.setFullYear(d.getFullYear() + 1);
-    } else { // MENSAL
-      d.setMonth(d.getMonth() + 1);
-    }
-    return d.toISOString().slice(0, 10);
-  };
-
   // Update Transaction
   const updateTransaction = (id: string, updated: Partial<Transaction>) => {
     const current = transactions.find((tx) => tx.id === id);
@@ -605,13 +619,8 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         cartaoDetalhes: {
           ...next.cartaoDetalhes,
           competenciaFatura: updated.cartaoDetalhes?.competenciaFatura
-            || (updated.data
-            ? calculateInvoiceCompetence(
-                next.data,
-                next.cartaoDetalhes.melhorDiaCompra || card?.fechamentoDia || 1,
-                next.cartaoDetalhes.diaVencimento || card?.vencimentoDia || 1
-              )
-            : existingCompetence),
+            || existingCompetence
+            || getCurrentInvoiceCompetence(),
         },
       };
     }
@@ -629,53 +638,80 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
       })
     );
 
-    // Fixed cost propagation on PAGO transition
-    let nextTxList: Transaction[] = [];
-    if (
-      next.status === 'PAGO' &&
-      current.status !== 'PAGO' &&
-      next.origemFinanceira === 'CUSTO_FIXO' &&
-      next.custoFixoDetalhes?.ativo &&
-      next.custoFixoDetalhes.recorrencia !== 'UNICA'
-    ) {
-      const nextDate = getNextOccurrenceDate(next.data, next.custoFixoDetalhes.recorrencia);
-      const dataTermino = next.custoFixoDetalhes.dataTermino;
-      const hasReachedEnd = dataTermino && nextDate > dataTermino;
-      
-      if (!hasReachedEnd) {
-        const baseId = next.id.replace(/-\d+$/, '');
-        const nextMonthStr = nextDate.slice(0, 7);
-        const alreadyExists = transactions.some((t) =>
-          t.origemFinanceira === 'CUSTO_FIXO' &&
-          (t.id === baseId || t.id.startsWith(`${baseId}-`)) &&
-          t.data.startsWith(nextMonthStr)
-        );
-        
-        if (!alreadyExists) {
-          const match = next.id.match(/-(\d+)$/);
-          const currentIdx = match ? parseInt(match[1]) : 1;
-          const nextIdx = currentIdx + 1;
-          const nextId = `${baseId}-${nextIdx}`;
-          
-          const nextTx: Transaction = {
-            ...next,
-            id: nextId,
-            status: 'PENDENTE',
-            data: nextDate,
-            custoFixoDetalhes: {
-              ...next.custoFixoDetalhes,
-              proximoVencimento: getNextOccurrenceDate(nextDate, next.custoFixoDetalhes.recorrencia),
-            }
-          };
-          nextTxList.push(nextTx);
-        }
-      }
-    }
-
     setTransactions((prev) => {
       const updatedList = prev.map((tx) => (tx.id === id ? next : tx));
-      return [...nextTxList, ...updatedList];
+      return updatedList;
     });
+  };
+
+  const saveTransactionBatch = async (upserts: Transaction[], deletedIds: string[] = []) => {
+    const uniqueDeletes = Array.from(new Set(deletedIds));
+    const uniqueUpserts = Array.from(new Map(upserts.map((tx) => [tx.id, tx])).values()).map((next) => {
+      const current = transactions.find((tx) => tx.id === next.id);
+      if (current?.status !== 'PAGO' && next.status === 'PAGO' && next.origemFinanceira === 'CUSTO_FIXO' && next.custoFixoDetalhes) {
+        return { ...next, custoFixoDetalhes: { ...next.custoFixoDetalhes, recorrenciaId: getFixedCostRecurrenceId(next) } };
+      }
+      return next;
+    });
+    const paidFixedCostTransitions = uniqueUpserts.filter((next) => {
+      const current = transactions.find((tx) => tx.id === next.id);
+      return current?.status !== 'PAGO' && next.status === 'PAGO' && next.origemFinanceira === 'CUSTO_FIXO'
+        && next.custoFixoDetalhes?.ativo && next.custoFixoDetalhes.recorrencia !== 'UNICA';
+    });
+    const applyBalanceChanges = () => {
+      const changes = new Map<string, number>();
+      const balanceEffect = (tx?: Transaction) => tx?.status === 'PAGO' && tx.contaBancariaId
+        ? (tx.tipo === 'RECEITA' ? tx.valor : -tx.valor)
+        : 0;
+      uniqueUpserts.forEach((next) => {
+        const current = transactions.find((tx) => tx.id === next.id);
+        if (current?.contaBancariaId) changes.set(current.contaBancariaId, (changes.get(current.contaBancariaId) || 0) - balanceEffect(current));
+        if (next.contaBancariaId) changes.set(next.contaBancariaId, (changes.get(next.contaBancariaId) || 0) + balanceEffect(next));
+      });
+      uniqueDeletes.forEach((id) => {
+        const current = transactions.find((tx) => tx.id === id);
+        if (current?.contaBancariaId) changes.set(current.contaBancariaId, (changes.get(current.contaBancariaId) || 0) - balanceEffect(current));
+      });
+      if (changes.size) setBankAccounts((accounts) => accounts.map((account) => ({ ...account, saldo: account.saldo + (changes.get(account.id) || 0) })));
+    };
+    try {
+      if (isSupabaseConfigured) {
+        await transactionSyncQueue.current;
+        if (uniqueUpserts.length) {
+          const result = await supabaseApi.upsertTransactions(uniqueUpserts);
+          if (!result.success) return result;
+        }
+        if (uniqueDeletes.length) {
+          const result = await supabaseApi.deleteByIds('transactions', uniqueDeletes);
+          if (!result.success) return result;
+        }
+        let persisted = await supabaseApi.getTransactions();
+        const nextOccurrences = createNextFixedCostOccurrences(paidFixedCostTransitions, persisted);
+        if (nextOccurrences.length) {
+          const result = await supabaseApi.upsertTransactions(nextOccurrences);
+          if (!result.success) return result;
+          persisted = await supabaseApi.getTransactions();
+        }
+        applyBalanceChanges();
+        skipNextTransactionSync.current = true;
+        setTransactions(persisted);
+        return { success: true };
+      }
+
+      setTransactions((previous) => {
+        const deleted = new Set(uniqueDeletes);
+        const updates = new Map(uniqueUpserts.map((tx) => [tx.id, tx]));
+        const retained = previous.filter((tx) => !deleted.has(tx.id)).map((tx) => updates.get(tx.id) || tx);
+        const existingIds = new Set(retained.map((tx) => tx.id));
+        const updated = [...uniqueUpserts.filter((tx) => !existingIds.has(tx.id)), ...retained];
+        return [...createNextFixedCostOccurrences(paidFixedCostTransitions, updated), ...updated];
+      });
+      applyBalanceChanges();
+      return { success: true };
+    } catch (error) {
+      console.error('Erro ao salvar edição em lote:', error);
+      return { success: false, error };
+    }
   };
 
   // Delete Transaction
@@ -725,70 +761,15 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   };
 
   // Toggle Status
-  const toggleTransactionStatus = (id: string) => {
-    setTransactions((prev) => {
-      const current = prev.find((tx) => tx.id === id);
-      if (!current) return prev;
-      
-      const newStatus: TransactionStatus = current.status === 'PAGO' ? 'PENDENTE' : 'PAGO';
-
-      // Update bank account if linked
-      if (current.contaBancariaId) {
-        const isNowPaid = newStatus === 'PAGO';
-        const multiplier = isNowPaid ? 1 : -1;
-        const delta = (current.tipo === 'RECEITA' ? current.valor : -current.valor) * multiplier;
-
-        setBankAccounts((accounts) =>
-          accounts.map((acc) =>
-            acc.id === current.contaBancariaId ? { ...acc, saldo: acc.saldo + delta } : acc
-          )
-        );
-      }
-
-      let nextTxList: Transaction[] = [];
-      if (
-        newStatus === 'PAGO' &&
-        current.origemFinanceira === 'CUSTO_FIXO' &&
-        current.custoFixoDetalhes?.ativo &&
-        current.custoFixoDetalhes.recorrencia !== 'UNICA'
-      ) {
-        const nextDate = getNextOccurrenceDate(current.data, current.custoFixoDetalhes.recorrencia);
-        const dataTermino = current.custoFixoDetalhes.dataTermino;
-        const hasReachedEnd = dataTermino && nextDate > dataTermino;
-        
-        if (!hasReachedEnd) {
-          const baseId = current.id.replace(/-\d+$/, '');
-          const nextMonthStr = nextDate.slice(0, 7);
-          const alreadyExists = prev.some((t) =>
-            t.origemFinanceira === 'CUSTO_FIXO' &&
-            (t.id === baseId || t.id.startsWith(`${baseId}-`)) &&
-            t.data.startsWith(nextMonthStr)
-          );
-          
-          if (!alreadyExists) {
-            const match = current.id.match(/-(\d+)$/);
-            const currentIdx = match ? parseInt(match[1]) : 1;
-            const nextIdx = currentIdx + 1;
-            const nextId = `${baseId}-${nextIdx}`;
-            
-            const nextTx: Transaction = {
-              ...current,
-              id: nextId,
-              status: 'PENDENTE',
-              data: nextDate,
-              custoFixoDetalhes: {
-                ...current.custoFixoDetalhes,
-                proximoVencimento: getNextOccurrenceDate(nextDate, current.custoFixoDetalhes.recorrencia),
-              }
-            };
-            nextTxList.push(nextTx);
-          }
-        }
-      }
-
-      const updatedList = prev.map((tx) => (tx.id === id ? { ...tx, status: newStatus } : tx));
-      return [...nextTxList, ...updatedList];
-    });
+  const toggleTransactionStatus = async (id: string) => {
+    const current = transactions.find((tx) => tx.id === id);
+    if (!current) return;
+    const newStatus: TransactionStatus = current.status === 'PAGO' ? 'PENDENTE' : 'PAGO';
+    const result = await saveTransactionBatch([{ ...current, status: newStatus }]);
+    if (!result.success) {
+      console.error('Erro ao atualizar status do lançamento:', result.error);
+      alert(`Não foi possível atualizar o status no banco. ${String((result.error as any)?.message || result.error || '')}`);
+    }
   };
 
   // Pay Contract Installment
@@ -980,6 +961,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         deleteContractWithTransactions,
         addTransaction,
         updateTransaction,
+        saveTransactionBatch,
         deleteTransaction,
         deleteTransactions,
         toggleTransactionStatus,

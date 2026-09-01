@@ -7,9 +7,15 @@ export interface CardInvoiceCalculation {
   cardName: string;
   competence: string;
   amount: number;
+  /** Valor original da fatura, incluindo itens já pagos e abatimentos. */
+  statementAmount: number;
+  /** Saldo que ainda precisa ser quitado. */
+  outstandingAmount: number;
+  paidAmount: number;
   dueDate: string;
   status: 'PENDENTE' | 'PAGO';
   transactions: Transaction[];
+  allTransactions: Transaction[];
 }
 
 export interface PayoffEstimate {
@@ -54,11 +60,13 @@ export const calculateContractPayoffEstimate = (contract: CreditContract): Payof
 const isCancelled = (tx: Transaction) => String(tx.status) === 'CANCELADO';
 const isOpen = (tx: Transaction) => tx.status !== 'PAGO' && !isCancelled(tx);
 const monthKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+export const getCurrentInvoiceCompetence = (date = new Date()) => monthKey(date);
 const addMonths = (competence: string, months: number) => {
   const [year, month] = competence.split('-').map(Number);
   return monthKey(new Date(year, month - 1 + months, 1));
 };
 const normalizeCardName = (value = '') => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+const sumMoney = (items: Transaction[]) => items.reduce((cents, tx) => cents + Math.round(tx.valor * 100), 0) / 100;
 
 export const resolveTransactionCard = (tx: Transaction, cards: CreditCard[]) => {
   const cardId = tx.cartaoDetalhes?.cartaoId;
@@ -127,13 +135,21 @@ export const getCardInvoices = (transactions: Transaction[], cards: CreditCard[]
     const [cardId, competence] = key.split('|');
     const card = cards.find((item) => item.id === cardId)!;
     const openItems = items.filter(isOpen);
+    const paidItems = items.filter((tx) => tx.status === 'PAGO');
     const status: CardInvoiceCalculation['status'] = openItems.length ? 'PENDENTE' : 'PAGO';
-    const considered = openItems.length ? openItems : items.filter((tx) => tx.status === 'PAGO');
+    const considered = openItems.length ? openItems : paidItems;
+    const statementAmount = sumMoney(items);
+    const outstandingAmount = sumMoney(openItems);
     return {
       cardId, cardName: card.nome, competence,
-      amount: considered.reduce((sum, tx) => sum + tx.valor, 0),
+      // Mantido como saldo em aberto para os fluxos de pagamento, limite e dívida.
+      amount: status === 'PENDENTE' ? outstandingAmount : statementAmount,
+      statementAmount,
+      outstandingAmount,
+      paidAmount: sumMoney(paidItems),
       dueDate: getInvoiceDueDate(competence, card.vencimentoDia), status,
       transactions: considered.sort((a, b) => a.data.localeCompare(b.data)),
+      allTransactions: [...items].sort((a, b) => a.data.localeCompare(b.data)),
     };
   }).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 };
@@ -143,6 +159,8 @@ export const getOpenCardInvoices = (transactions: Transaction[], cards: CreditCa
 
 export const getOpenCardInvoice = (transactions: Transaction[], cards: CreditCard[], cardId: string) =>
   getOpenCardInvoices(transactions, cards).find((invoice) => invoice.cardId === cardId);
+
+export const getInvoiceStatementAmount = (invoice?: CardInvoiceCalculation) => invoice?.statementAmount || 0;
 
 export const getConsolidatedFlowItems = (transactions: Transaction[], cards: CreditCard[]): CalculatedFlowItem[] => {
   const canonical = getCanonicalTransactions(transactions);
@@ -217,8 +235,18 @@ export const getOpenCardDebt = (transactions: Transaction[], cards: CreditCard[]
     .reduce((sum, invoice) => sum + invoice.amount, 0);
 
 /** Total para quitação: inclui todas as competências abertas e parcelas futuras já contratadas. */
-export const getTotalOpenCardDebt = (transactions: Transaction[], cards: CreditCard[]) =>
-  getOpenCardInvoices(transactions, cards).reduce((sum, invoice) => sum + invoice.amount, 0);
+export const getTotalOpenCardDebt = (transactions: Transaction[], cards: CreditCard[], referenceDate = new Date()) => {
+  const currentCompetence = getCurrentInvoiceCompetence(referenceDate);
+  const cents = getOpenCardInvoices(transactions, cards).reduce((total, invoice) => {
+    const invoiceCents = invoice.transactions.reduce((subtotal, tx) => {
+      const isRecurring = Boolean(tx.cartaoDetalhes?.recorrente);
+      if (isRecurring && invoice.competence !== currentCompetence) return subtotal;
+      return subtotal + Math.round(tx.valor * 100);
+    }, 0);
+    return total + invoiceCents;
+  }, 0);
+  return cents / 100;
+};
 
 /** Saldo de contratos cadastrados mais financiamentos existentes apenas no fluxo, sem duplicação. */
 export const getTotalFinancingDebt = (_transactions: Transaction[], contracts: CreditContract[]) => {

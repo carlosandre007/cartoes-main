@@ -269,12 +269,12 @@ export const supabaseApi = {
 
       if (error) {
         console.error('[Supabase Error] getTransactions:', error);
-        return [];
+        throw error;
       }
       return (data || []).map(mapTransactionFromDB);
     } catch (err) {
       console.error('[Supabase Exception] getTransactions:', err);
-      return [];
+      throw err;
     }
   },
 
@@ -302,18 +302,18 @@ export const supabaseApi = {
     if (!isSupabaseConfigured) return { success: true };
     try {
       const dbFields: any = {};
-      if (updated.tipo) dbFields.tipo = updated.tipo;
-      if (updated.descricao) dbFields.descricao = updated.descricao;
+      if (updated.tipo !== undefined) dbFields.tipo = updated.tipo;
+      if (updated.descricao !== undefined) dbFields.descricao = updated.descricao;
       if (updated.valor !== undefined) dbFields.valor = updated.valor;
-      if (updated.data) dbFields.data = updated.data;
-      if (updated.categoria) dbFields.categoria = updated.categoria;
-      if (updated.empresa) dbFields.empresa = updated.empresa;
-      if (updated.centroCusto) dbFields.centro_custo = updated.centroCusto;
-      if (updated.formaPagamento) dbFields.forma_pagamento = updated.formaPagamento;
-      if (updated.origemFinanceira) dbFields.origem_financeira = updated.origemFinanceira;
-      if (updated.status) dbFields.status = updated.status;
-      if (updated.observacao) dbFields.observacao = updated.observacao;
-      if (updated.cartaoDetalhes) dbFields.cartao_detalhes = updated.cartaoDetalhes;
+      if (updated.data !== undefined) dbFields.data = updated.data;
+      if (updated.categoria !== undefined) dbFields.categoria = updated.categoria;
+      if (updated.empresa !== undefined) dbFields.empresa = updated.empresa || null;
+      if (updated.centroCusto !== undefined) dbFields.centro_custo = updated.centroCusto || null;
+      if (updated.formaPagamento !== undefined) dbFields.forma_pagamento = updated.formaPagamento || null;
+      if (updated.origemFinanceira !== undefined) dbFields.origem_financeira = updated.origemFinanceira;
+      if (updated.status !== undefined) dbFields.status = updated.status;
+      if (updated.observacao !== undefined) dbFields.observacao = updated.observacao || null;
+      if (updated.cartaoDetalhes !== undefined) dbFields.cartao_detalhes = updated.cartaoDetalhes || null;
 
       const { error } = await supabase.from('transactions').update(dbFields).eq('id', id);
       if (error) {

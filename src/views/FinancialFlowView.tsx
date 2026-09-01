@@ -469,10 +469,10 @@ export const FinancialFlowView: React.FC = () => {
                       {/* Valor */}
                       <td className="p-3.5 text-right font-mono font-bold text-sm">
                         <span
-                          className={tx.tipo === 'RECEITA' ? 'text-emerald-400' : 'text-amber-400'}
+                          className={tx.tipo === 'RECEITA' || (tx.origemFinanceira === 'CARTAO_CREDITO' && tx.valor < 0) ? 'text-emerald-400' : 'text-amber-400'}
                         >
-                          {tx.tipo === 'RECEITA' ? '+' : '-'} R${' '}
-                          {tx.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                          {tx.tipo === 'RECEITA' || tx.valor < 0 ? '+' : '-'} R${' '}
+                          {Math.abs(tx.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                         </span>
                       </td>
 

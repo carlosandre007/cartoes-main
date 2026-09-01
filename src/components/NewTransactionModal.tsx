@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Sparkles, Plus, Calendar, DollarSign, Building, Wallet, CreditCard, Repeat, FileText, CheckCircle2 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
-import { addMonthsToCompetence } from '../utils/financialCalculations';
+import { addMonthsToCompetence, getCurrentInvoiceCompetence } from '../utils/financialCalculations';
 import { CurrencyInput } from './CurrencyInput';
 import {
   TransactionType,
@@ -19,7 +19,7 @@ interface NewTransactionModalProps {
 export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen, onClose }) => {
   const {
     addTransaction,
-    updateTransaction,
+    saveTransactionBatch,
     transactions,
     cards,
     bankAccounts,
@@ -52,6 +52,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
   const [diaVencimento, setDiaVencimento] = useState(20);
   const [gerarParcelasAutomaticas, setGerarParcelasAutomaticas] = useState(true);
   const [cartaoRecorrente, setCartaoRecorrente] = useState(false);
+  const [competenciaFatura, setCompetenciaFatura] = useState(() => getCurrentInvoiceCompetence());
 
   // Conditional Fields: Custo Fixo
   const [recorrencia, setRecorrencia] = useState<RecorrenciaTipo>('MENSAL');
@@ -166,6 +167,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     setParcelasTotal(1);
     setGerarParcelasAutomaticas(true);
     setCartaoRecorrente(false);
+    setCompetenciaFatura(getCurrentInvoiceCompetence());
     setDataTerminoCustoFixo('');
     setCetMensal('');
     setCetAnual('');
@@ -188,6 +190,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
         setMelhorDiaCompra(modalPrefillData.cartaoDetalhes.melhorDiaCompra || 10);
         setDiaVencimento(modalPrefillData.cartaoDetalhes.diaVencimento || 20);
         setCartaoRecorrente(Boolean(modalPrefillData.cartaoDetalhes.recorrente));
+        setCompetenciaFatura(modalPrefillData.cartaoDetalhes.competenciaFatura || getCurrentInvoiceCompetence());
       }
       if (modalPrefillData.custoFixoDetalhes) {
         setRecorrencia(modalPrefillData.custoFixoDetalhes.recorrencia);
@@ -310,7 +313,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     setShowAddContract(false);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     const numValor = valor;
@@ -370,6 +373,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
           ? modalPrefillData?.cartaoDetalhes?.recorrenciaId || `rec-card-${globalThis.crypto?.randomUUID?.() || Date.now()}`
           : undefined,
         recorrenciaAtiva: cartaoRecorrente || undefined,
+        competenciaFatura,
       };
     } else if (origemFinanceira === 'CUSTO_FIXO') {
       txData.custoFixoDetalhes = {
@@ -406,6 +410,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     }
 
     if (modalPrefillData?.id) {
+      const persistedUpdates: Transaction[] = [];
       if (
         origemFinanceira === 'CARTAO_CREDITO' &&
         modalPrefillData.cartaoDetalhes?.parcelasTotal &&
@@ -417,7 +422,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
 
         if (installmentEditOption === 'single') {
           // Option 1: Only this parcel
-          updateTransaction(modalPrefillData.id, txData);
+          persistedUpdates.push({ ...modalPrefillData, ...txData, id: modalPrefillData.id });
         } else if (installmentEditOption === 'future') {
           // Option 2: This and subsequent parcels
           const linked = transactions.filter((t) => t.origemFinanceira === 'CARTAO_CREDITO' && (t.id === baseId || t.id.startsWith(`${baseId}-`)));
@@ -439,7 +444,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                   competenciaFatura: addMonthsToCompetence(txData.cartaoDetalhes.competenciaFatura, monthDiff),
                 }
               };
-              updateTransaction(t.id, updatedData);
+              persistedUpdates.push({ ...t, ...updatedData, id: t.id });
             }
           });
         } else if (installmentEditOption === 'all') {
@@ -462,12 +467,18 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                 competenciaFatura: addMonthsToCompetence(txData.cartaoDetalhes.competenciaFatura, monthDiff),
               }
             };
-            updateTransaction(t.id, updatedData);
+            persistedUpdates.push({ ...t, ...updatedData, id: t.id });
           });
         }
       } else {
         // Normal update
-        updateTransaction(modalPrefillData.id, txData);
+        persistedUpdates.push({ ...modalPrefillData, ...txData, id: modalPrefillData.id });
+      }
+      const saveResult = await saveTransactionBatch(persistedUpdates);
+      if (!saveResult.success) {
+        console.error('Erro ao salvar edição do lançamento:', saveResult.error);
+        alert(`Não foi possível salvar a edição no banco. ${String((saveResult.error as any)?.message || saveResult.error || '')}`);
+        return;
       }
     } else {
       const shouldGenerateInstallments =
@@ -915,7 +926,16 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-zinc-400 block mb-1">Competência da Fatura</label>
+                  <input
+                    type="month"
+                    value={competenciaFatura}
+                    onChange={(e) => setCompetenciaFatura(e.target.value)}
+                    className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-zinc-200 font-mono"
+                  />
+                </div>
                 <div>
                   <label className="text-zinc-400 block mb-1">Melhor Dia de Compra</label>
                   <input

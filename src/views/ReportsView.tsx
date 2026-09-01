@@ -167,7 +167,7 @@ export const ReportsView: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="font-mono font-bold text-amber-400 text-sm">
+                <div className={`font-mono font-bold text-sm ${tx.origemFinanceira === 'CARTAO_CREDITO' && tx.valor < 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
                   R$ {tx.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                 </div>
               </div>

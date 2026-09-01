@@ -33,6 +33,7 @@ export interface CartaoDetalhes {
 
 export interface CustoFixoDetalhes {
   recorrencia: RecorrenciaTipo;
+  recorrenciaId?: string;
   proximoVencimento: string; // ISO string YYYY-MM-DD
   dataTermino?: string; // ISO string YYYY-MM-DD
   ativo: boolean;

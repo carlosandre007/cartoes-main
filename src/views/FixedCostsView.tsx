@@ -36,6 +36,11 @@ const createBulkRow = (dateStr?: string): BulkFixedCostRow => ({
   recorrencia: 'MENSAL',
 });
 
+const defaultDateForMonth = (month: string) => {
+  const today = new Date().toISOString().slice(0, 10);
+  return today.startsWith(month) ? today : `${month}-01`;
+};
+
 export const FixedCostsView: React.FC = () => {
   const { transactions, cards, openNewTransactionModal, toggleTransactionStatus, addTransaction, payCardInvoice, deleteTransactions } = useFinancial();
   
@@ -66,7 +71,7 @@ export const FixedCostsView: React.FC = () => {
     const d = new Date(year, month - 2, 1);
     const prevVal = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     setSelectedMonth(prevVal);
-    setBulkRows([createBulkRow(`${prevVal}-01`)]);
+    setBulkRows([createBulkRow(defaultDateForMonth(prevVal))]);
   };
 
   const handleNextMonth = () => {
@@ -74,11 +79,11 @@ export const FixedCostsView: React.FC = () => {
     const d = new Date(year, month, 1);
     const nextVal = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     setSelectedMonth(nextVal);
-    setBulkRows([createBulkRow(`${nextVal}-01`)]);
+    setBulkRows([createBulkRow(defaultDateForMonth(nextVal))]);
   };
 
   const [isBulkOpen, setIsBulkOpen] = useState(false);
-  const [bulkRows, setBulkRows] = useState<BulkFixedCostRow[]>(() => [createBulkRow(`${selectedMonth}-01`)]);
+  const [bulkRows, setBulkRows] = useState<BulkFixedCostRow[]>(() => [createBulkRow(defaultDateForMonth(selectedMonth))]);
 
   const updateBulkRow = (id: string, changes: Partial<BulkFixedCostRow>) => {
     setBulkRows((rows) => rows.map((row) => row.id === id ? { ...row, ...changes } : row));
@@ -100,7 +105,7 @@ export const FixedCostsView: React.FC = () => {
       });
     });
     alert(`${validRows.length} custos fixos cadastrados com sucesso.`);
-    setBulkRows([createBulkRow(`${selectedMonth}-01`)]);
+    setBulkRows([createBulkRow(defaultDateForMonth(selectedMonth))]);
     setIsBulkOpen(false);
   };
 
@@ -175,7 +180,7 @@ export const FixedCostsView: React.FC = () => {
                 const val = e.target.value;
                 if (val) {
                   setSelectedMonth(val);
-                  setBulkRows([createBulkRow(`${val}-01`)]);
+                  setBulkRows([createBulkRow(defaultDateForMonth(val))]);
                 }
               }}
               className="px-3 py-2 bg-transparent text-xs text-zinc-100 font-bold focus:outline-none cursor-pointer text-center"
@@ -250,7 +255,7 @@ export const FixedCostsView: React.FC = () => {
             </div>
 
             <div className="flex flex-col sm:flex-row justify-between gap-3 pt-2">
-              <button type="button" onClick={() => setBulkRows((rows) => [...rows, createBulkRow(`${selectedMonth}-01`)])} className="px-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-amber-300 text-xs font-bold flex items-center justify-center gap-2"><Plus className="w-4 h-4" />Adicionar linha</button>
+              <button type="button" onClick={() => setBulkRows((rows) => [...rows, createBulkRow(defaultDateForMonth(selectedMonth))])} className="px-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-amber-300 text-xs font-bold flex items-center justify-center gap-2"><Plus className="w-4 h-4" />Adicionar linha</button>
               <div className="flex gap-2">
                 <button type="button" onClick={() => setIsBulkOpen(false)} className="px-4 py-2.5 rounded-xl bg-zinc-900 text-zinc-300 text-xs font-bold">Cancelar</button>
                 <button type="submit" className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 text-zinc-950 text-xs font-extrabold">Salvar lista</button>
@@ -292,7 +297,7 @@ export const FixedCostsView: React.FC = () => {
         <div className="space-y-3">
           {currentMonthFixedCosts.length === 0 ? (
             <div className="text-center py-12 text-zinc-500 text-xs">
-              Nenhum custo fixo com vencimento no mês selecionado.
+              Nenhum custo registrado para {formattedMonthName.replace(' de ', '/')}.
             </div>
           ) : (
             [...currentMonthFixedCosts].sort((a, b) => a.data.localeCompare(b.data)).map((tx) => (
