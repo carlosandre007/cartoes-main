@@ -23,9 +23,10 @@ import {
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
 import { getMonthlyCommitments } from '../utils/monthlyCommitments';
-import { getCanonicalTransactions, getConsolidatedFlowItems, getTotalOpenCardDebt, getTotalFinancingDebt, getTotalFixedCostDebt } from '../utils/financialCalculations';
+import { calculateUnifiedDebt, getCanonicalTransactions, getConsolidatedFlowItems } from '../utils/financialCalculations';
 import { buildFinancialIntelligenceSummary, generateLocalFinancialAnalysis, parseFinancialNumber } from '../utils/financialIntelligence';
 import { getMonthlyCategorySpending } from '../utils/categorySpending';
+import { UnifiedDebtMemoryModal } from '../components/UnifiedDebtMemoryModal';
 
 export const DashboardView: React.FC = () => {
   const {
@@ -42,7 +43,11 @@ export const DashboardView: React.FC = () => {
     addGoal,
     updateGoal,
     deleteGoal,
+    dataLoadState,
+    dataLoadError,
+    dataLastUpdatedAt,
   } = useFinancial();
+  const [isDebtMemoryOpen, setIsDebtMemoryOpen] = React.useState(false);
 
   const [companyRevenueByMonth, setCompanyRevenueByMonth] = React.useState<Record<string, number>>(() => {
     try { return JSON.parse(localStorage.getItem('aureum_company_revenue_by_month') || '{}'); }
@@ -123,14 +128,16 @@ export const DashboardView: React.FC = () => {
   const resultadoLiquidoMes = totalReceitasMes - totalDespesasMes;
 
   // Debt statistics
-  const totalDividaContratos = getTotalFinancingDebt(canonicalTransactions, contracts);
-  // Mantém o Dashboard consistente com a tela de Cartões: considera todas as
-  // faturas e parcelas abertas, não apenas a competência do mês atual.
-  const totalDividaCartoes = getTotalOpenCardDebt(canonicalTransactions, cards);
+  const unifiedDebt = React.useMemo(
+    () => calculateUnifiedDebt(canonicalTransactions, cards, contracts, now),
+    [canonicalTransactions, cards, contracts, currentMonthStr]
+  );
+  const totalDividaContratos = unifiedDebt.subtotals.FINANCIAMENTO;
+  const totalDividaCartoes = unifiedDebt.subtotals.CARTAO;
   const dividaTotal = totalDividaContratos + totalDividaCartoes;
   const totalLimiteUtilizadoCartoes = totalDividaCartoes;
-  const totalDividaCustosFixos = getTotalFixedCostDebt(canonicalTransactions, now);
-  const totalDebitosUnificado = totalLimiteUtilizadoCartoes + totalDividaContratos + totalDividaCustosFixos;
+  const totalDividaCustosFixos = unifiedDebt.subtotals.CUSTO_FIXO;
+  const totalDebitosUnificado = unifiedDebt.total;
   const faturamentoEmpresaMes = companyRevenueByMonth[currentMonthStr] || 0;
 
   const totalValorPagoContratos = contracts.reduce((acc, c) => acc + c.valorPago, 0);
@@ -323,12 +330,10 @@ export const DashboardView: React.FC = () => {
             <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2"><BarChart3 className="w-4 h-4 text-red-400" /> Central Unificada de Débitos</h3>
             <p className="text-xs text-zinc-400">Cartões utilizados, saldo dos financiamentos e custos fixos. Quando há data de término, todas as parcelas devidas até o fim entram no total. O faturamento é apenas informativo.</p>
           </div>
-          <button onClick={handleAddCompanyRevenue} className="px-4 py-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-bold text-xs rounded-xl flex items-center justify-center gap-2 cursor-pointer">
-            <Building2 className="w-4 h-4" /> Adicionar/atualizar faturamento
-          </button>
+          <div className="flex flex-wrap gap-2"><button onClick={() => setIsDebtMemoryOpen(true)} disabled={dataLoadState !== 'ready'} className="px-4 py-2.5 bg-amber-500/10 border border-amber-500/30 text-amber-300 font-bold text-xs rounded-xl disabled:opacity-40">Ver cálculo</button><button onClick={handleAddCompanyRevenue} className="px-4 py-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-bold text-xs rounded-xl flex items-center justify-center gap-2 cursor-pointer"><Building2 className="w-4 h-4" /> Adicionar/atualizar faturamento</button></div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        {dataLoadState !== 'ready' ? <div className={`p-4 rounded-xl border text-xs ${dataLoadState === 'error' ? 'border-red-500/30 bg-red-950/20 text-red-300' : 'border-amber-500/30 bg-amber-950/20 text-amber-300'}`}>{dataLoadState === 'error' ? `Não foi possível confirmar o total: ${dataLoadError || 'falha ao carregar os dados'}.` : 'Carregando dados para calcular o total…'}</div> : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           {[
             ['Limite utilizado dos cartões', totalLimiteUtilizadoCartoes, 'text-amber-400'],
             ['Financiamentos a quitar', totalDividaContratos, 'text-red-400'],
@@ -341,7 +346,7 @@ export const DashboardView: React.FC = () => {
               <strong className={`text-base font-black font-mono ${color}`}>R$ {(value as number).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>
             </div>
           ))}
-        </div>
+        </div>}
 
         <div className="space-y-3">
           <div className="flex items-center justify-between text-xs">
@@ -359,6 +364,7 @@ export const DashboardView: React.FC = () => {
           </div>
         </div>
       </div>
+      {isDebtMemoryOpen && <UnifiedDebtMemoryModal calculation={unifiedDebt} updatedAt={dataLastUpdatedAt} onClose={() => setIsDebtMemoryOpen(false)} onNavigate={(target) => { setIsDebtMemoryOpen(false); setActiveView(target); }} />}
 
       {/* Main Grid: Charts & Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

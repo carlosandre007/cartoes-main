@@ -27,6 +27,33 @@ export interface PayoffEstimate {
   monthlyRate: number;
 }
 
+export type UnifiedDebtOrigin = 'CARTAO' | 'FINANCIAMENTO' | 'CUSTO_FIXO';
+export interface UnifiedDebtItem {
+  id: string;
+  origin: UnifiedDebtOrigin;
+  description: string;
+  reference: string;
+  competence?: string;
+  dueDate?: string;
+  status: string;
+  grossAmount: number;
+  paidAmount: number;
+  contribution: number;
+  targetView: 'cartoes' | 'credito' | 'custos-fixos';
+  exclusionReason?: string;
+}
+export interface UnifiedDebtCalculation {
+  meaning: string;
+  referenceCompetence: string;
+  filters: string[];
+  calculatedAt: string;
+  subtotals: Record<UnifiedDebtOrigin, number>;
+  total: number;
+  included: UnifiedDebtItem[];
+  excluded: UnifiedDebtItem[];
+  inconsistencies: string[];
+}
+
 /**
  * Estimativa informativa do valor presente das parcelas restantes.
  * O boleto oficial pode incluir encargos, seguros, tarifas e atualização diária.
@@ -273,4 +300,122 @@ export const getTotalFinancingDebt = (_transactions: Transaction[], contracts: C
   const registeredTotal = Array.from(registeredById.values())
     .reduce((sum, contract) => sum + Math.max(0, contract.valorRestante), 0);
   return registeredTotal;
+};
+
+const moneyFromCents = (cents: number) => cents / 100;
+const sumItemContributions = (items: UnifiedDebtItem[]) =>
+  moneyFromCents(items.reduce((sum, item) => sum + Math.round(item.contribution * 100), 0));
+
+export const calculateUnifiedDebt = (
+  transactions: Transaction[], cards: CreditCard[], contracts: CreditContract[], referenceDate = new Date()
+): UnifiedDebtCalculation => {
+  const competence = monthKey(referenceDate);
+  const canonical = getCanonicalTransactions(transactions);
+  const included: UnifiedDebtItem[] = [];
+  const excluded: UnifiedDebtItem[] = [];
+  const inconsistencies: string[] = [];
+
+  getCardInvoices(canonical, cards).forEach((invoice) => {
+    const eligible = invoice.transactions.filter((tx) =>
+      !(tx.cartaoDetalhes?.recorrente && invoice.competence !== competence)
+    );
+    const contribution = sumMoney(eligible);
+    const grossAmount = sumMoney(invoice.allTransactions.filter((tx) =>
+      !(tx.cartaoDetalhes?.recorrente && invoice.competence !== competence)
+    ));
+    const paidAmount = moneyFromCents(Math.max(0, Math.round((grossAmount - contribution) * 100)));
+    const item: UnifiedDebtItem = {
+      id: `invoice-${invoice.cardId}-${invoice.competence}`, origin: 'CARTAO',
+      description: `Fatura ${invoice.cardName}`, reference: `${invoice.cardId} • ${invoice.cardName}`,
+      competence: invoice.competence, dueDate: invoice.dueDate, status: invoice.status,
+      grossAmount, paidAmount, contribution, targetView: 'cartoes',
+    };
+    if (contribution > 0 && invoice.status === 'PENDENTE') included.push(item);
+    else excluded.push({ ...item, contribution: 0, exclusionReason: invoice.status === 'PAGO' ? 'Quitado' : 'Recorrência fora da competência atual' });
+
+    invoice.transactions.filter((tx) => tx.cartaoDetalhes?.recorrente && invoice.competence !== competence)
+      .forEach((tx) => excluded.push({
+        id: tx.id, origin: 'CARTAO', description: tx.descricao, reference: tx.id,
+        competence: invoice.competence, dueDate: invoice.dueDate, status: tx.status,
+        grossAmount: tx.valor, paidAmount: 0, contribution: 0, targetView: 'cartoes',
+        exclusionReason: 'Recorrência futura: entra somente na competência atual',
+      }));
+  });
+
+  const contractById = new Map<string, CreditContract>();
+  contracts.forEach((contract) => {
+    const existing = contractById.get(contract.id);
+    if (!existing || contract.valorRestante < existing.valorRestante) contractById.set(contract.id, contract);
+    else if (existing) inconsistencies.push(`Contrato duplicado para conferência: ${contract.id}`);
+  });
+  contractById.forEach((contract) => {
+    const contribution = contract.status === 'LIQUIDADO' ? 0 : Math.max(0, contract.valorRestante);
+    const item: UnifiedDebtItem = {
+      id: contract.id, origin: 'FINANCIAMENTO', description: contract.titulo,
+      reference: `${contract.id} • ${contract.instituicao}`, dueDate: contract.proximoVencimento,
+      status: contract.status, grossAmount: Math.max(0, contract.valorTotal),
+      paidAmount: Math.max(0, contract.valorPago), contribution, targetView: 'credito',
+    };
+    if (contribution > 0) included.push(item);
+    else excluded.push({ ...item, exclusionReason: contract.status === 'LIQUIDADO' ? 'Quitado' : 'Sem saldo devedor' });
+  });
+
+  const fixedGroups = new Map<string, Transaction[]>();
+  canonical.filter((tx) => tx.tipo === 'DESPESA' && tx.origemFinanceira === 'CUSTO_FIXO').forEach((tx) => {
+    const key = tx.custoFixoDetalhes?.recorrencia !== 'UNICA' ? getFixedCostRecurrenceId(tx) : tx.id;
+    fixedGroups.set(key, [...(fixedGroups.get(key) || []), tx]);
+  });
+  fixedGroups.forEach((group, groupId) => {
+    const ordered = [...group].sort((a, b) => a.data.localeCompare(b.data));
+    const first = ordered[0];
+    const details = first.custoFixoDetalhes;
+    const scoped = details?.dataTermino ? ordered : ordered.filter((tx) => tx.data.startsWith(competence));
+    let grossCents = scoped.reduce((sum, tx) => sum + Math.round(tx.valor * 100), 0);
+    let paidCents = scoped.filter((tx) => tx.status === 'PAGO').reduce((sum, tx) => sum + Math.round(tx.valor * 100), 0);
+    if (details?.dataTermino) {
+      const scheduledCount = countOccurrencesThrough(first.data, details.dataTermino, details.recorrencia || 'MENSAL');
+      const futureCount = Math.max(0, scheduledCount - ordered.length);
+      grossCents += futureCount * Math.round(ordered.at(-1)!.valor * 100);
+    }
+    const contribution = moneyFromCents(Math.max(0, grossCents - paidCents));
+    const item: UnifiedDebtItem = {
+      id: groupId, origin: 'CUSTO_FIXO', description: first.descricao, reference: groupId,
+      competence: details?.dataTermino ? `${first.data.slice(0, 7)} até ${details.dataTermino.slice(0, 7)}` : competence,
+      dueDate: ordered.find((tx) => tx.status !== 'PAGO')?.data || first.data,
+      status: contribution > 0 ? 'PENDENTE' : 'PAGO', grossAmount: moneyFromCents(grossCents),
+      paidAmount: moneyFromCents(paidCents), contribution, targetView: 'custos-fixos',
+    };
+    if (contribution > 0) included.push(item);
+    else if (scoped.length) excluded.push({ ...item, exclusionReason: 'Quitado' });
+    else excluded.push({ ...item, exclusionReason: 'Fora da competência atual' });
+  });
+
+  transactions.filter((tx) => tx.status === 'CANCELADO' && ['CARTAO_CREDITO', 'CUSTO_FIXO'].includes(tx.origemFinanceira))
+    .forEach((tx) => excluded.push({
+      id: tx.id, origin: tx.origemFinanceira === 'CARTAO_CREDITO' ? 'CARTAO' : 'CUSTO_FIXO',
+      description: tx.descricao, reference: tx.id, competence: tx.cartaoDetalhes?.competenciaFatura || tx.data.slice(0, 7),
+      dueDate: tx.data, status: tx.status, grossAmount: tx.valor, paidAmount: 0, contribution: 0,
+      targetView: tx.origemFinanceira === 'CARTAO_CREDITO' ? 'cartoes' : 'custos-fixos', exclusionReason: 'Cancelado',
+    }));
+
+  canonical.filter((tx) => tx.origemFinanceira === 'CARTAO_CREDITO' && !resolveTransactionCard(tx, cards))
+    .forEach((tx) => inconsistencies.push(`Compra no cartão sem cartão localizável: ${tx.id}`));
+  [...included, ...excluded].forEach((item) => {
+    if (![item.grossAmount, item.paidAmount, item.contribution].every(Number.isFinite)) {
+      inconsistencies.push(`Valor monetário inválido: ${item.reference}`);
+    }
+  });
+
+  const subtotals = {
+    CARTAO: sumItemContributions(included.filter((item) => item.origin === 'CARTAO')),
+    FINANCIAMENTO: sumItemContributions(included.filter((item) => item.origin === 'FINANCIAMENTO')),
+    CUSTO_FIXO: sumItemContributions(included.filter((item) => item.origin === 'CUSTO_FIXO')),
+  };
+  const total = moneyFromCents(Object.values(subtotals).reduce((sum, value) => sum + Math.round(value * 100), 0));
+  return {
+    meaning: 'Saldo de dívidas em aberto para quitação; não inclui previsão de receitas nem fluxo realizado.',
+    referenceCompetence: competence,
+    filters: ['Somente dados do usuário autenticado já carregados pelo contexto', 'Cancelados e quitados não contribuem', 'Parcelas contratadas de cartão entram; recorrências futuras ainda não', 'Custos fixos sem término consideram a competência atual'],
+    calculatedAt: referenceDate.toISOString(), subtotals, total, included, excluded, inconsistencies,
+  };
 };

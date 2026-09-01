@@ -21,6 +21,9 @@ interface FinancialContextType {
   bankAccounts: BankAccount[];
   goals: FinancialGoal[];
   notifications: NotificationItem[];
+  dataLoadState: 'loading' | 'ready' | 'error';
+  dataLoadError?: string;
+  dataLastUpdatedAt: Date;
   activeView: ViewTab;
   setActiveView: (view: ViewTab) => void;
   isDarkMode: boolean;
@@ -127,6 +130,9 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   // Goals & Notifications
   const [goals, setGoals] = useState<FinancialGoal[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [dataLoadState, setDataLoadState] = useState<'loading' | 'ready' | 'error'>(isSupabaseConfigured ? 'loading' : 'ready');
+  const [dataLoadError, setDataLoadError] = useState<string>();
+  const [dataLastUpdatedAt, setDataLastUpdatedAt] = useState(new Date());
   const hasLoadedRemoteData = useRef(!isSupabaseConfigured);
   const skipNextTransactionSync = useRef(false);
   const transactionSyncQueue = useRef<Promise<unknown>>(Promise.resolve());
@@ -152,8 +158,12 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         setBankAccounts(dbBanks);
         setGoals(dbGoals);
         setNotifications(dbNotifs);
+        setDataLoadState('ready');
+        setDataLastUpdatedAt(new Date());
       } catch (err) {
         console.error('Error loading Supabase backend data:', err);
+        setDataLoadState('error');
+        setDataLoadError(err instanceof Error ? err.message : String(err));
       } finally {
         hasLoadedRemoteData.current = true;
       }
@@ -161,6 +171,10 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
 
     loadSupabaseData();
   }, []);
+
+  useEffect(() => {
+    if (dataLoadState === 'ready') setDataLastUpdatedAt(new Date());
+  }, [transactions, cards, contracts]);
 
   // Sync to local storage & Supabase
   useEffect(() => {
@@ -950,6 +964,9 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
         bankAccounts,
         goals,
         notifications,
+        dataLoadState,
+        dataLoadError,
+        dataLastUpdatedAt,
         activeView,
         setActiveView,
         isDarkMode,
