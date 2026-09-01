@@ -25,6 +25,7 @@ import { useFinancial } from '../context/FinancialContext';
 import { getMonthlyCommitments } from '../utils/monthlyCommitments';
 import { getCanonicalTransactions, getConsolidatedFlowItems, getTotalOpenCardDebt, getTotalFinancingDebt, getTotalFixedCostDebt } from '../utils/financialCalculations';
 import { buildFinancialIntelligenceSummary, generateLocalFinancialAnalysis, parseFinancialNumber } from '../utils/financialIntelligence';
+import { getMonthlyCategorySpending } from '../utils/categorySpending';
 
 export const DashboardView: React.FC = () => {
   const {
@@ -104,6 +105,8 @@ export const DashboardView: React.FC = () => {
   const canonicalTransactions = getCanonicalTransactions(transactions);
   const consolidatedFlow = getConsolidatedFlowItems(canonicalTransactions, cards);
   const currentMonthTxs = consolidatedFlow.filter((tx) => tx.data.startsWith(currentMonthStr));
+  const categorySpending = getMonthlyCategorySpending(canonicalTransactions, cards, now);
+  const totalCategorySpending = categorySpending.reduce((cents, item) => cents + Math.round(item.amount * 100), 0) / 100;
 
   const totalReceitasMes = currentMonthTxs
     .filter((tx) => tx.tipo === 'RECEITA' && tx.status === 'PAGO')
@@ -495,6 +498,37 @@ export const DashboardView: React.FC = () => {
 
         {/* Right column: Próximos Vencimentos & Goals */}
         <div className="space-y-6">
+          <div className="p-6 rounded-2xl bg-zinc-950/90 border border-amber-500/20 shadow-xl space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-zinc-100 flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4 text-amber-400" /> Consumo por Categoria
+                </h3>
+                <p className="text-[10px] text-zinc-500 mt-1 capitalize">{currentMonthLabel} de {now.getFullYear()}</p>
+              </div>
+              <div className="text-right">
+                <div className="text-[9px] uppercase text-zinc-500">Total do mês</div>
+                <div className="text-sm font-black font-mono text-amber-400">R$ {totalCategorySpending.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</div>
+              </div>
+            </div>
+            {categorySpending.length === 0 ? (
+              <div className="py-6 text-center text-xs text-zinc-500">Nenhuma despesa cadastrada neste mês.</div>
+            ) : (
+              <div className="space-y-3">
+                {categorySpending.map((item) => (
+                  <div key={item.category} className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className="font-semibold text-zinc-200 truncate">{item.category}</span>
+                      <span className="shrink-0 font-mono"><span className="text-amber-400 font-bold">{item.percentage.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%</span><span className="text-zinc-500"> • </span><span className="text-zinc-200">R$ {item.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span></span>
+                    </div>
+                    <div className="h-2 rounded-full bg-zinc-900 overflow-hidden border border-zinc-800/80">
+                      <div className="h-full rounded-full bg-gradient-to-r from-amber-600 to-amber-300" style={{ width: `${item.percentage}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           {alertasCustosFixos.length > 0 && (
             <div className="p-5 rounded-2xl bg-red-950/30 border border-red-500/40 shadow-xl space-y-3">
               <h3 className="text-sm font-bold text-red-300 flex items-center gap-2">
@@ -560,6 +594,11 @@ export const DashboardView: React.FC = () => {
                       <div className="text-xs font-bold font-mono text-amber-400">
                         R$ {tx.amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                       </div>
+                      {tx.kind === 'CARD_INVOICE' && tx.outstandingAmount !== undefined && tx.outstandingAmount !== tx.amount && (
+                        <div className="text-[9px] text-zinc-400 font-mono">
+                          Saldo: R$ {tx.outstandingAmount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        </div>
+                      )}
                       {tx.transactionId ? (
                         <button
                           onClick={() => toggleTransactionStatus(tx.transactionId!)}

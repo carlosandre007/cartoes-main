@@ -765,7 +765,19 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     const current = transactions.find((tx) => tx.id === id);
     if (!current) return;
     const newStatus: TransactionStatus = current.status === 'PAGO' ? 'PENDENTE' : 'PAGO';
-    const result = await saveTransactionBatch([{ ...current, status: newStatus }]);
+    const today = new Date().toISOString().slice(0, 10);
+    const next: Transaction = {
+      ...current,
+      status: newStatus,
+      custoFixoDetalhes: current.custoFixoDetalhes
+        ? {
+            ...current.custoFixoDetalhes,
+            dataPagamento: newStatus === 'PAGO' ? today : undefined,
+            valorPago: newStatus === 'PAGO' ? current.valor : undefined,
+          }
+        : current.custoFixoDetalhes,
+    };
+    const result = await saveTransactionBatch([next]);
     if (!result.success) {
       console.error('Erro ao atualizar status do lançamento:', result.error);
       alert(`Não foi possível atualizar o status no banco. ${String((result.error as any)?.message || result.error || '')}`);
@@ -831,6 +843,8 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     const valorFatura = invoiceTransactions.reduce((sum, tx) => sum + tx.valor, 0);
     if (valorFatura <= 0) return;
     const invoiceTransactionIds = new Set(invoiceTransactions.map((tx) => tx.id));
+    const paymentDate = new Date().toISOString().slice(0, 10);
+    const paymentId = `card-payment-${card.id}-${targetInvoice!.competence}-${globalThis.crypto?.randomUUID?.() || Date.now()}`;
 
     // Os próprios lançamentos do cartão formam o fluxo único. A quitação
     // baixa esses lançamentos na conta, sem criar uma segunda despesa.
@@ -842,6 +856,9 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
             status: 'PAGO',
             contaBancariaId: paymentAccount.id,
             contaBancariaNome: paymentAccount.banco,
+            cartaoDetalhes: {
+              ...tx.cartaoDetalhes!, pagamentoFaturaId: paymentId, dataPagamentoFatura: paymentDate,
+            },
           };
         }
         return tx;

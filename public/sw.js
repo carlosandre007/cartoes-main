@@ -1,5 +1,5 @@
 // Aureum Private Banking Service Worker (PWA Offline & Cache Engine)
-const CACHE_NAME = 'aureum-pwa-v3';
+const CACHE_NAME = 'aureum-pwa-v4-recorrencia';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',

@@ -314,6 +314,10 @@ export const supabaseApi = {
       if (updated.status !== undefined) dbFields.status = updated.status;
       if (updated.observacao !== undefined) dbFields.observacao = updated.observacao || null;
       if (updated.cartaoDetalhes !== undefined) dbFields.cartao_detalhes = updated.cartaoDetalhes || null;
+      if (updated.custoFixoDetalhes !== undefined) dbFields.custo_fixo_detalhes = updated.custoFixoDetalhes || null;
+      if (updated.financiamentoDetalhes !== undefined) dbFields.financiamento_detalhes = updated.financiamentoDetalhes || null;
+      if (updated.contaBancariaId !== undefined) dbFields.conta_bancaria_id = updated.contaBancariaId || null;
+      if (updated.contaBancariaNome !== undefined) dbFields.conta_bancaria_nome = updated.contaBancariaNome || null;
 
       const { error } = await supabase.from('transactions').update(dbFields).eq('id', id);
       if (error) {

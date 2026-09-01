@@ -21,8 +21,7 @@ import { useFinancial } from '../context/FinancialContext';
 import { parseCSVToCardPurchases, parseRowsToCardPurchases } from '../utils/importExport';
 import { addMonthsToCompetence, getCardInvoices, getCurrentInvoiceCompetence, getInvoiceStatementAmount, getOpenCardInvoice, getOpenCardInvoices, transactionBelongsToCard } from '../utils/financialCalculations';
 import { CurrencyInput } from '../components/CurrencyInput';
-
-const DEFAULT_CARD_EXPENSE_CATEGORIES = ['LOC MOTTUS', 'RASTREAR', 'AP AURORA', 'ANDRE', 'ALANE'];
+import { useCategories } from '../hooks/useCategories';
 
 export const InvoiceTotalValue: React.FC<{ amount: number; className?: string }> = ({ amount, className = '' }) => (
   <span className={className}>
@@ -36,14 +35,7 @@ export const CardsView: React.FC = () => {
   const [selectedCardId, setSelectedCardId] = useState<string>(cards[0]?.id || '');
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isBulkPurchaseOpen, setIsBulkPurchaseOpen] = useState(false);
-  const [cardExpenseCategories, setCardExpenseCategories] = useState<string[]>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('aureum_card_expense_categories') || '[]');
-      return Array.from(new Set([...DEFAULT_CARD_EXPENSE_CATEGORIES, ...(Array.isArray(saved) ? saved : [])]));
-    } catch {
-      return DEFAULT_CARD_EXPENSE_CATEGORIES;
-    }
-  });
+  const { categories: cardExpenseCategories, addCategory } = useCategories(transactions.map((tx) => tx.categoria));
   const [bulkPurchases, setBulkPurchases] = useState([
     { descricao: '', valorParcela: '', parcelas: 1 },
   ]);
@@ -130,9 +122,7 @@ export const CardsView: React.FC = () => {
       alert('Esta categoria já está cadastrada.');
       return;
     }
-    const updated = [...cardExpenseCategories, category];
-    setCardExpenseCategories(updated);
-    localStorage.setItem('aureum_card_expense_categories', JSON.stringify(updated));
+    addCategory(category);
   };
 
   const openBulkEdit = () => {

@@ -17,6 +17,7 @@ import { useFinancial } from '../context/FinancialContext';
 import { RecorrenciaTipo } from '../types';
 import { getConsolidatedFlowItems } from '../utils/financialCalculations';
 import { CurrencyInput } from '../components/CurrencyInput';
+import { useCategories } from '../hooks/useCategories';
 
 interface BulkFixedCostRow {
   id: string;
@@ -43,6 +44,7 @@ const defaultDateForMonth = (month: string) => {
 
 export const FixedCostsView: React.FC = () => {
   const { transactions, cards, openNewTransactionModal, toggleTransactionStatus, addTransaction, payCardInvoice, deleteTransactions } = useFinancial();
+  const { categories } = useCategories(transactions.map((tx) => tx.categoria));
   
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
@@ -245,7 +247,7 @@ export const FixedCostsView: React.FC = () => {
                     className="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100"
                   />
                   <input type="date" value={row.data} onChange={(e) => updateBulkRow(row.id, { data: e.target.value })} className="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100" />
-                  <input value={row.categoria} onChange={(e) => updateBulkRow(row.id, { categoria: e.target.value })} placeholder="Categoria" className="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100" />
+                  <div><input list="fixed-cost-categories" value={row.categoria} onChange={(e) => updateBulkRow(row.id, { categoria: e.target.value })} placeholder="Categoria" className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100" /><datalist id="fixed-cost-categories">{categories.map((category) => <option key={category} value={category} />)}</datalist></div>
                   <select value={row.recorrencia} onChange={(e) => updateBulkRow(row.id, { recorrencia: e.target.value as RecorrenciaTipo })} className="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-100">
                     <option value="MENSAL">Mensal</option><option value="SEMANAL">Semanal</option><option value="TRIMESTRAL">Trimestral</option><option value="ANUAL">Anual</option><option value="UNICA">Única</option>
                   </select>

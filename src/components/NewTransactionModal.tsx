@@ -3,6 +3,7 @@ import { X, Sparkles, Plus, Calendar, DollarSign, Building, Wallet, CreditCard, 
 import { useFinancial } from '../context/FinancialContext';
 import { addMonthsToCompetence, getCurrentInvoiceCompetence } from '../utils/financialCalculations';
 import { CurrencyInput } from './CurrencyInput';
+import { useCategories } from '../hooks/useCategories';
 import {
   TransactionType,
   TransactionStatus,
@@ -30,6 +31,7 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
     addContract,
     updateContract,
   } = useFinancial();
+  const { categories } = useCategories(transactions.map((tx) => tx.categoria));
 
   // Form Fields
   const [tipo, setTipo] = useState<TransactionType>('DESPESA');
@@ -626,17 +628,8 @@ export const NewTransactionModal: React.FC<NewTransactionModalProps> = ({ isOpen
                 onChange={(e) => setCategoria(e.target.value)}
                 className="w-full px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-xl text-zinc-100 focus:outline-none focus:border-amber-500/50"
               >
-                <option value="Moradia">Moradia</option>
-                <option value="Transporte">Transporte / Veículos</option>
-                <option value="Alimentação">Alimentação & Gastronomia</option>
-                <option value="Investimentos">Investimentos & Aportes</option>
-                <option value="Serviços">Serviços & Contratos</option>
-                <option value="Empresarial">Empresarial & Pro labore</option>
-                <option value="Tributos">Tributos & Impostos</option>
-                <option value="Viagem">Viagens & Lazer</option>
-                <option value="Tecnologia">Tecnologia & Servidores</option>
-                <option value="Quitação de Dívida">Quitação de Dívida</option>
-                <option value="Outros">Outros</option>
+                {!categories.includes(categoria) && <option value={categoria}>{categoria}</option>}
+                {categories.map((category) => <option key={category} value={category}>{category}</option>)}
               </select>
             </div>
 

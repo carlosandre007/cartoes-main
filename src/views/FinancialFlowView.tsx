@@ -26,8 +26,9 @@ import { useFinancial } from '../context/FinancialContext';
 import { TransactionType, TransactionStatus, OrigemFinanceira } from '../types';
 import { parseCSVToTransactions, parseRowsToTransactions, exportTransactionsToCSV, downloadCSVFile } from '../utils/importExport';
 import { getConsolidatedFlowItems } from '../utils/financialCalculations';
+import { RealizedCashFlowView } from './RealizedCashFlowView';
 
-export const FinancialFlowView: React.FC = () => {
+const LegacyFinancialFlowView: React.FC = () => {
   const {
     transactions,
     addTransaction,
@@ -542,3 +543,8 @@ export const FinancialFlowView: React.FC = () => {
     </div>
   );
 };
+
+export const FinancialFlowView: React.FC = () =>
+  import.meta.env.VITE_ENABLE_REALIZED_CASH_FLOW === 'true'
+    ? <RealizedCashFlowView />
+    : <LegacyFinancialFlowView />;

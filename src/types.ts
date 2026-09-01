@@ -29,6 +29,8 @@ export interface CartaoDetalhes {
   recorrente?: boolean;
   recorrenciaId?: string;
   recorrenciaAtiva?: boolean;
+  pagamentoFaturaId?: string;
+  dataPagamentoFatura?: string;
 }
 
 export interface CustoFixoDetalhes {
@@ -37,6 +39,8 @@ export interface CustoFixoDetalhes {
   proximoVencimento: string; // ISO string YYYY-MM-DD
   dataTermino?: string; // ISO string YYYY-MM-DD
   ativo: boolean;
+  dataPagamento?: string;
+  valorPago?: number;
 }
 
 export interface FinanciamentoDetalhes {

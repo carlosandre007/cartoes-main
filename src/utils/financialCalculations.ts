@@ -1,4 +1,5 @@
 import { CreditCard, CreditContract, RecorrenciaTipo, Transaction } from '../types';
+import { getFixedCostRecurrenceId } from './fixedCostRecurrence';
 
 export type CalculatedFlowItem = Transaction & { isCardInvoice?: boolean; invoiceCardId?: string };
 
@@ -213,20 +214,34 @@ const countOccurrencesThrough = (startDate: string, endDate: string, recurrence:
  */
 export const getTotalFixedCostDebt = (transactions: Transaction[], referenceDate = new Date()) => {
   const referenceMonth = monthKey(referenceDate);
-  return getCanonicalTransactions(transactions)
+  const groups = new Map<string, Transaction[]>();
+  getCanonicalTransactions(transactions)
     .filter((tx) => tx.tipo === 'DESPESA' && tx.origemFinanceira === 'CUSTO_FIXO')
-    .reduce((sum, tx) => {
-      const details = tx.custoFixoDetalhes;
-      if (!details?.dataTermino) return tx.data.startsWith(referenceMonth) ? sum + tx.valor : sum;
+    .forEach((tx) => {
+      const recurring = tx.custoFixoDetalhes?.recorrencia !== 'UNICA';
+      const key = recurring ? getFixedCostRecurrenceId(tx) : tx.id;
+      groups.set(key, [...(groups.get(key) || []), tx]);
+    });
 
-      const installments = countOccurrencesThrough(
-        tx.data,
-        details.dataTermino,
-        details.recorrencia || 'MENSAL'
-      );
-      const installmentsDue = Math.max(0, installments - (tx.status === 'PAGO' ? 1 : 0));
-      return sum + tx.valor * installmentsDue;
-    }, 0);
+  const cents = Array.from(groups.values()).reduce((total, group) => {
+    const ordered = [...group].sort((a, b) => a.data.localeCompare(b.data));
+    const first = ordered[0];
+    const details = first.custoFixoDetalhes;
+    if (!details?.dataTermino) {
+      return total + ordered
+        .filter((tx) => tx.status !== 'PAGO' && tx.data.startsWith(referenceMonth))
+        .reduce((sum, tx) => sum + Math.round(tx.valor * 100), 0);
+    }
+
+    const scheduledCount = countOccurrencesThrough(first.data, details.dataTermino, details.recorrencia || 'MENSAL');
+    const unmaterializedCount = Math.max(0, scheduledCount - ordered.length);
+    const registeredOpenCents = ordered
+      .filter((tx) => tx.status !== 'PAGO')
+      .reduce((sum, tx) => sum + Math.round(tx.valor * 100), 0);
+    const futureUnitCents = Math.round(ordered.at(-1)!.valor * 100);
+    return total + registeredOpenCents + unmaterializedCount * futureUnitCents;
+  }, 0);
+  return cents / 100;
 };
 
 export const getOpenCardDebt = (transactions: Transaction[], cards: CreditCard[], competence = monthKey(new Date())) =>
@@ -250,15 +265,12 @@ export const getTotalOpenCardDebt = (transactions: Transaction[], cards: CreditC
 
 /** Saldo de contratos cadastrados mais financiamentos existentes apenas no fluxo, sem duplicação. */
 export const getTotalFinancingDebt = (_transactions: Transaction[], contracts: CreditContract[]) => {
-  const financingSignature = (institution: string, total: number, installments: number) =>
-    `${normalizeCardName(institution)}|${total.toFixed(2)}|${installments}`;
-  const registeredBySignature = new Map<string, CreditContract>();
+  const registeredById = new Map<string, CreditContract>();
   contracts.filter((contract) => contract.status !== 'LIQUIDADO').forEach((contract) => {
-    const signature = financingSignature(contract.instituicao, contract.valorTotal, contract.parcelasTotal);
-    const existing = registeredBySignature.get(signature);
-    if (!existing || contract.valorRestante < existing.valorRestante) registeredBySignature.set(signature, contract);
+    const existing = registeredById.get(contract.id);
+    if (!existing || contract.valorRestante < existing.valorRestante) registeredById.set(contract.id, contract);
   });
-  const registeredTotal = Array.from(registeredBySignature.values())
+  const registeredTotal = Array.from(registeredById.values())
     .reduce((sum, contract) => sum + Math.max(0, contract.valorRestante), 0);
   return registeredTotal;
 };

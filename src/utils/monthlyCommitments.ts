@@ -1,5 +1,5 @@
 import { CreditCard, Transaction, TransactionStatus } from '../types';
-import { getCanonicalTransactions, getOpenCardInvoices } from './financialCalculations';
+import { getCanonicalTransactions, getInvoiceStatementAmount, getOpenCardInvoices } from './financialCalculations';
 
 export interface MonthlyCommitment {
   id: string;
@@ -11,6 +11,7 @@ export interface MonthlyCommitment {
   status: TransactionStatus;
   transactionId?: string;
   cardId?: string;
+  outstandingAmount?: number;
 }
 
 const monthKey = (date: Date) =>
@@ -23,7 +24,7 @@ export const getMonthlyCommitments = (
   const canonicalTransactions = getCanonicalTransactions(transactions);
   const seen = new Set<string>();
   const fixedCosts = canonicalTransactions
-    .filter((tx) => tx.origemFinanceira === 'CUSTO_FIXO' && tx.tipo === 'DESPESA' && tx.status !== 'PAGO' && tx.data.startsWith(key))
+    .filter((tx) => tx.origemFinanceira === 'CUSTO_FIXO' && tx.tipo === 'DESPESA' && tx.status !== 'PAGO' && tx.valor > 0 && tx.data.startsWith(key))
     .sort((a, b) => a.data.localeCompare(b.data))
     .filter((tx) => {
       const uniqueKey = `${tx.descricao.trim().toLocaleLowerCase('pt-BR')}|${tx.valor}`;
@@ -32,18 +33,19 @@ export const getMonthlyCommitments = (
       return true;
     })
     .map((tx): MonthlyCommitment => ({
-      id: `fixed-${tx.id}`, title: tx.descricao, amount: tx.valor, date: tx.data,
+      id: `fixed-${tx.id}`, title: tx.descricao, amount: Math.round(tx.valor * 100) / 100, date: tx.data,
       category: 'Custo fixo', kind: 'FIXED_COST', status: tx.status, transactionId: tx.id,
     }));
 
   const invoiceCalculations = getOpenCardInvoices(canonicalTransactions, cards)
     .filter((invoice) => invoice.competence === key);
   const cardInvoices = invoiceCalculations.map((invoice): MonthlyCommitment | null => {
-    if (invoice.amount <= 0) return null;
+    const statementAmount = getInvoiceStatementAmount(invoice);
+    if (statementAmount <= 0) return null;
     return {
-      id: `invoice-${invoice.cardId}-${key}`, title: invoice.cardName, amount: invoice.amount,
+      id: `invoice-${invoice.cardId}-${key}`, title: invoice.cardName, amount: statementAmount,
       date: invoice.dueDate, category: 'Fatura do cartão', kind: 'CARD_INVOICE',
-      status: 'PENDENTE', cardId: invoice.cardId,
+      status: 'PENDENTE', cardId: invoice.cardId, outstandingAmount: invoice.outstandingAmount,
     };
   }).filter((item): item is MonthlyCommitment => item !== null);
 
