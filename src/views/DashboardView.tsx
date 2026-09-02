@@ -27,6 +27,7 @@ import { calculateUnifiedDebt, getCanonicalTransactions, getConsolidatedFlowItem
 import { buildFinancialIntelligenceSummary, generateLocalFinancialAnalysis, parseFinancialNumber } from '../utils/financialIntelligence';
 import { getMonthlyCategorySpending } from '../utils/categorySpending';
 import { UnifiedDebtMemoryModal } from '../components/UnifiedDebtMemoryModal';
+import { DashboardBreakdown, DashboardBreakdownModal } from '../components/DashboardBreakdownModal';
 
 export const DashboardView: React.FC = () => {
   const {
@@ -48,6 +49,7 @@ export const DashboardView: React.FC = () => {
     dataLastUpdatedAt,
   } = useFinancial();
   const [isDebtMemoryOpen, setIsDebtMemoryOpen] = React.useState(false);
+  const [dashboardDetail, setDashboardDetail] = React.useState<DashboardBreakdown | null>(null);
 
   const [companyRevenueByMonth, setCompanyRevenueByMonth] = React.useState<Record<string, number>>(() => {
     try { return JSON.parse(localStorage.getItem('aureum_company_revenue_by_month') || '{}'); }
@@ -126,6 +128,12 @@ export const DashboardView: React.FC = () => {
     .reduce((acc, tx) => acc + tx.valor, 0);
 
   const resultadoLiquidoMes = totalReceitasMes - totalDespesasMes;
+  const openDashboardDetail = (kind: 'SALDO' | 'RECEITA' | 'DESPESA' | 'PASSIVO') => {
+    if (kind === 'SALDO') setDashboardDetail({ title: 'Saldo consolidado', description: 'Saldos atuais das contas bancárias cadastradas.', total: totalBankBalance, rows: bankAccounts.map((account) => ({ id: account.id, description: account.banco, detail: `${account.agencia} • ${account.conta} • ${account.ativa ? 'Ativa' : 'Inativa'}`, value: account.saldo })) });
+    if (kind === 'RECEITA') setDashboardDetail({ title: `Receitas realizadas — ${currentMonthLabel}`, description: 'Receitas com situação paga na competência atual.', total: totalReceitasMes, rows: currentMonthTxs.filter((tx) => tx.tipo === 'RECEITA' && tx.status === 'PAGO').map((tx) => ({ id: tx.id, description: tx.descricao, detail: `${tx.data} • ${tx.categoria} • ${tx.status}`, value: tx.valor })) });
+    if (kind === 'DESPESA') setDashboardDetail({ title: `Despesas realizadas — ${currentMonthLabel}`, description: `Despesas pagas. Pendências do mês: ${totalDespesasPendentesMes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}.`, total: totalDespesasMes, rows: currentMonthTxs.filter((tx) => tx.tipo === 'DESPESA' && tx.status === 'PAGO').map((tx) => ({ id: tx.id, description: tx.descricao, detail: `${tx.data} • ${tx.categoria} • ${tx.status}`, value: tx.valor })) });
+    if (kind === 'PASSIVO') setDashboardDetail({ title: 'Passivo / Dívida total', description: 'Faturas abertas e saldos de contratos ativos; custos fixos aparecem no Total unificado.', total: dividaTotal, rows: unifiedDebt.included.filter((item) => item.origin !== 'CUSTO_FIXO').map((item) => ({ id: item.id, description: item.description, detail: `${item.reference} • ${item.status}`, value: item.contribution })) });
+  };
 
   // Debt statistics
   const unifiedDebt = React.useMemo(
@@ -243,7 +251,7 @@ export const DashboardView: React.FC = () => {
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Saldo Consolidado */}
-        <div className="p-5 rounded-2xl bg-zinc-950/90 border border-amber-500/20 hover:border-amber-500/40 transition-all shadow-lg space-y-3">
+        <button type="button" onClick={() => openDashboardDetail('SALDO')} className="text-left p-5 rounded-2xl bg-zinc-950/90 border border-amber-500/20 hover:border-amber-500/40 transition-all shadow-lg space-y-3 cursor-pointer">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-zinc-400">Saldo Consolidado</span>
             <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
@@ -257,10 +265,10 @@ export const DashboardView: React.FC = () => {
             <ArrowUpRight className="w-3.5 h-3.5" />
             <span>{bankAccounts.length} {bankAccounts.length === 1 ? 'conta cadastrada' : 'contas cadastradas'}</span>
           </div>
-        </div>
+        </button>
 
         {/* Receita do Mês */}
-        <div className="p-5 rounded-2xl bg-zinc-950/90 border border-emerald-500/20 hover:border-emerald-500/40 transition-all shadow-lg space-y-3">
+        <button type="button" onClick={() => openDashboardDetail('RECEITA')} className="text-left p-5 rounded-2xl bg-zinc-950/90 border border-emerald-500/20 hover:border-emerald-500/40 transition-all shadow-lg space-y-3 cursor-pointer">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-zinc-400">Receitas ({currentMonthLabel})</span>
             <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
@@ -271,10 +279,10 @@ export const DashboardView: React.FC = () => {
             R$ {totalReceitasMes.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
           </div>
           <div className="text-[11px] text-zinc-400">Total recebido e realizado no mês</div>
-        </div>
+        </button>
 
         {/* Despesas do Mês */}
-        <div className="p-5 rounded-2xl bg-zinc-950/90 border border-amber-500/20 hover:border-amber-500/40 transition-all shadow-lg space-y-3">
+        <button type="button" onClick={() => openDashboardDetail('DESPESA')} className="text-left p-5 rounded-2xl bg-zinc-950/90 border border-amber-500/20 hover:border-amber-500/40 transition-all shadow-lg space-y-3 cursor-pointer">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-zinc-400">Despesas ({currentMonthLabel})</span>
             <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
@@ -287,10 +295,10 @@ export const DashboardView: React.FC = () => {
           <div className="text-[11px] text-zinc-400">
             Realizado • Pendente: R$ {totalDespesasPendentesMes.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
           </div>
-        </div>
+        </button>
 
         {/* Dívida Total Restante */}
-        <div className="p-5 rounded-2xl bg-zinc-950/90 border border-red-500/20 hover:border-red-500/40 transition-all shadow-lg space-y-3">
+        <button type="button" onClick={() => openDashboardDetail('PASSIVO')} className="text-left p-5 rounded-2xl bg-zinc-950/90 border border-red-500/20 hover:border-red-500/40 transition-all shadow-lg space-y-3 cursor-pointer">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-zinc-400">Passivo / Dívida Total</span>
             <div className="p-2 rounded-xl bg-red-500/10 text-red-400 border border-red-500/20">
@@ -303,7 +311,7 @@ export const DashboardView: React.FC = () => {
           <div className="text-[11px] text-zinc-400">
             {((totalValorPagoContratos / (valorTotalContratos || 1)) * 100).toFixed(1)}% amortizado
           </div>
-        </div>
+        </button>
       </div>
 
       <div className="p-6 rounded-2xl bg-gradient-to-r from-violet-950/30 via-zinc-950 to-amber-950/20 border border-violet-500/25 shadow-xl space-y-4">
@@ -341,10 +349,10 @@ export const DashboardView: React.FC = () => {
             ['Faturamento da empresa', faturamentoEmpresaMes, 'text-emerald-400'],
             ['Total unificado de débitos', totalDebitosUnificado, 'text-red-300'],
           ].map(([label, value, color]) => (
-            <div key={String(label)} className="p-4 rounded-xl bg-zinc-900/70 border border-zinc-800">
+            <button type="button" onClick={() => label === 'Faturamento da empresa' ? setDashboardDetail({ title: 'Faturamento da empresa', description: `Valor informativo cadastrado para ${currentMonthStr}. Não reduz o total de débitos.`, total: Number(value), rows: [] }) : setIsDebtMemoryOpen(true)} key={String(label)} className="text-left p-4 rounded-xl bg-zinc-900/70 border border-zinc-800 hover:border-amber-500/40 cursor-pointer">
               <span className="text-[10px] text-zinc-400 block min-h-8">{label}</span>
               <strong className={`text-base font-black font-mono ${color}`}>R$ {(value as number).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</strong>
-            </div>
+            </button>
           ))}
         </div>}
 
@@ -365,6 +373,7 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
       {isDebtMemoryOpen && <UnifiedDebtMemoryModal calculation={unifiedDebt} updatedAt={dataLastUpdatedAt} onClose={() => setIsDebtMemoryOpen(false)} onNavigate={(target) => { setIsDebtMemoryOpen(false); setActiveView(target); }} />}
+      {dashboardDetail && <DashboardBreakdownModal data={dashboardDetail} onClose={() => setDashboardDetail(null)} />}
 
       {/* Main Grid: Charts & Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

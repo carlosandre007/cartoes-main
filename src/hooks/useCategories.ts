@@ -1,4 +1,5 @@
 import React from 'react';
+import { isSupabaseConfigured, supabaseApi } from '../lib/supabase';
 
 export const DEFAULT_CATEGORIES = [
   'LOC MOTTUS', 'ANDRE', 'RASTREAR', 'AP AURORA', 'ALANE', 'IMOVEIS', 'BIA', 'IMPRESS 3D', 'ADS GOOGLE',
@@ -46,10 +47,20 @@ export const useCategories = (usedCategories: string[] = []) => {
     return () => { window.removeEventListener(EVENT_NAME, refresh); window.removeEventListener('storage', refresh); };
   }, []);
 
+  React.useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    void supabaseApi.getCategories().then((remote) => {
+      if (!remote.length) return;
+      const merged = persist([...catalog, ...remote]);
+      setCatalog(merged);
+    });
+  }, []);
+
   const categories = React.useMemo(() => unique([...catalog, ...usedCategories]), [catalog, usedCategories]);
-  const addCategory = (name: string) => setCatalog(persist([...catalog, name]));
-  const renameCategory = (oldName: string, newName: string) => setCatalog(persist(catalog.map((item) => item === oldName ? newName : item)));
-  const removeCategory = (name: string) => setCatalog(persist(catalog.filter((item) => item !== name)));
+  const save = (next: string[]) => { const persisted = persist(next); setCatalog(persisted); if (isSupabaseConfigured) void supabaseApi.replaceCategories(persisted); };
+  const addCategory = (name: string) => save([...catalog, name]);
+  const renameCategory = (oldName: string, newName: string) => save(catalog.map((item) => item === oldName ? newName : item));
+  const removeCategory = (name: string) => save(catalog.filter((item) => item !== name));
 
   return { categories, catalog, addCategory, renameCategory, removeCategory };
 };

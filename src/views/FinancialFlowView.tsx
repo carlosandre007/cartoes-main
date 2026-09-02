@@ -544,7 +544,6 @@ const LegacyFinancialFlowView: React.FC = () => {
   );
 };
 
-export const FinancialFlowView: React.FC = () =>
-  import.meta.env.VITE_ENABLE_REALIZED_CASH_FLOW === 'true'
-    ? <RealizedCashFlowView />
-    : <LegacyFinancialFlowView />;
+// O fluxo central é um extrato de caixa realizado: previsões, custos agendados
+// e faturas abertas permanecem nas respectivas áreas até a liquidação.
+export const FinancialFlowView: React.FC = () => <RealizedCashFlowView />;

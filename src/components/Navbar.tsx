@@ -58,6 +58,10 @@ const viewTitles: Record<ViewTab, { title: string; subtitle: string }> = {
     title: 'Relatórios & Business Intelligence',
     subtitle: 'Análise gráfica, evolução de patrimônio e exportação de relatórios em PDF/CSV',
   },
+  controle: {
+    title: 'Controle & Confiabilidade',
+    subtitle: 'Fechamento mensal, conciliação, inconsistências, orçamentos e auditoria',
+  },
   inteligencia: {
     title: 'Central de Inteligência Financeira',
     subtitle: 'Diagnóstico financeiro por IA executado exclusivamente sob sua solicitação',

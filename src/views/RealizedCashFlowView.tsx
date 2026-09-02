@@ -3,7 +3,7 @@ import { ArrowDownRight, ArrowUpRight, ChevronLeft, ChevronRight, Edit2, Plus, T
 import { useFinancial } from '../context/FinancialContext';
 import { CurrencyInput } from '../components/CurrencyInput';
 import { Transaction, TransactionType } from '../types';
-import { buildRealizedCashFlow, CashFlowOrigin, filterRealizedCashFlow, summarizeRealizedCashFlow } from '../utils/realizedCashFlow';
+import { AUREUM_FLOW_COST_CENTER, buildRealizedCashFlow, CashFlowOrigin, filterRealizedCashFlow, summarizeRealizedCashFlow } from '../utils/realizedCashFlow';
 import { useCategories } from '../hooks/useCategories';
 
 const METHODS = ['PIX', 'Dinheiro', 'Débito', 'Transferência', 'Boleto', 'Outro'];
@@ -21,10 +21,10 @@ const monthBounds = () => {
   return { start: `${month}-01`, end: `${month}-${String(new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()).padStart(2, '0')}` };
 };
 
-type FormState = { tipo: TransactionType; descricao: string; valor: number; data: string; categoria: string; forma: string; observacao: string; contaId: string };
+type FormState = { tipo: TransactionType; descricao: string; valor: number; data: string; categoria: string; empresa: string; forma: string; observacao: string; contaId: string };
 
 export const RealizedCashFlowView: React.FC = () => {
-  const { transactions, cards, bankAccounts, addTransaction, updateTransaction, deleteTransaction, addBankAccount, updateBankAccount, setActiveView } = useFinancial();
+  const { transactions, bankAccounts, addTransaction, updateTransaction, deleteTransaction, addBankAccount, updateBankAccount, setActiveView } = useFinancial();
   const bounds = monthBounds();
   const [startDate, setStartDate] = useState(bounds.start);
   const [endDate, setEndDate] = useState(bounds.end);
@@ -37,7 +37,7 @@ export const RealizedCashFlowView: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const pageSize = 12;
 
-  const realized = useMemo(() => buildRealizedCashFlow(transactions, cards), [transactions, cards]);
+  const realized = useMemo(() => buildRealizedCashFlow(transactions), [transactions]);
   const filtered = useMemo(() => filterRealizedCashFlow(realized, {
     startDate, endDate, tipo: filterType, origem: filterOrigin, search,
   }), [realized, startDate, endDate, filterType, filterOrigin, search]);
@@ -50,7 +50,7 @@ export const RealizedCashFlowView: React.FC = () => {
     setEditingId(tx?.id || null);
     setForm({
       tipo, descricao: tx?.descricao || '', valor: tx?.valor || 0, data: tx?.data || today(),
-      categoria: tx?.categoria || (tipo === 'RECEITA' ? 'Salário' : 'Alimentação'),
+      categoria: tx?.categoria || (tipo === 'RECEITA' ? 'Salário' : 'Alimentação'), empresa: tx?.empresa || 'Pessoal',
       forma: tx?.formaPagamento || 'PIX', observacao: tx?.observacao || '',
       contaId: tx?.contaBancariaId || bankAccounts.find((account) => account.ativa)?.id || '',
     });
@@ -65,7 +65,7 @@ export const RealizedCashFlowView: React.FC = () => {
     const account = bankAccounts.find((item) => item.id === form.contaId);
     const payload = {
       tipo: form.tipo, descricao: form.descricao.trim(), valor: Math.round(form.valor * 100) / 100,
-      data: form.data, categoria: form.categoria, empresa: 'Pessoal', centroCusto: 'Fluxo pessoal',
+      data: form.data, categoria: form.categoria, empresa: form.empresa.trim() || 'Pessoal', centroCusto: AUREUM_FLOW_COST_CENTER,
       formaPagamento: form.forma, origemFinanceira: 'OUTRO' as const, status: 'PAGO' as const,
       observacao: form.observacao.trim(), contaBancariaId: account?.id, contaBancariaNome: account?.banco,
     };
@@ -133,7 +133,7 @@ export const RealizedCashFlowView: React.FC = () => {
         <div className="p-3 flex justify-between text-xs text-zinc-400"><span>{filtered.length} registros • totais sobre todos os filtrados</span><div className="flex items-center gap-2"><button disabled={page === 1} onClick={() => setPage((p) => p - 1)}><ChevronLeft className="w-4 h-4" /></button><span>{page}/{totalPages}</span><button disabled={page === totalPages} onClick={() => setPage((p) => p + 1)}><ChevronRight className="w-4 h-4" /></button></div></div>
       </div>
 
-      {form && <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"><form onSubmit={saveManual} className="w-full max-w-xl bg-zinc-950 border border-amber-500/30 rounded-2xl p-5 space-y-4"><div className="flex justify-between"><div><h3 className="font-black">{editingId ? 'Editar' : 'Registrar'} {form.tipo === 'RECEITA' ? 'receita recebida' : 'despesa paga'}</h3><p className="text-xs text-zinc-400">Este formulário registra dinheiro já efetivamente movimentado. Compras no crédito devem ser cadastradas em Cartões.</p></div><button type="button" onClick={() => setForm(null)}><X className="w-5 h-5" /></button></div><div className="grid sm:grid-cols-2 gap-3 text-xs"><label className="sm:col-span-2">Descrição<input value={form.descricao} onChange={(e) => setForm({ ...form, descricao: e.target.value })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg" required /></label><label>Valor<CurrencyInput value={form.valor} onChange={(valor) => setForm({ ...form, valor })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg" /></label><label>Data efetiva<input type="date" value={form.data} onChange={(e) => setForm({ ...form, data: e.target.value })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg" required /></label><label>Categoria<div className="flex gap-1 mt-1"><input list="realized-categories" value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })} className="min-w-0 flex-1 p-2.5 bg-zinc-900 rounded-lg" /><button type="button" onClick={createCategory} className="px-2 rounded-lg border border-amber-500/30 text-amber-300">Nova</button></div><datalist id="realized-categories">{categories.map((value) => <option key={value} value={value} />)}</datalist></label><label>Forma<select value={form.forma} onChange={(e) => setForm({ ...form, forma: e.target.value })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg">{METHODS.map((value) => <option key={value}>{value}</option>)}</select></label><label className="sm:col-span-2">Conta, banco ou carteira<div className="flex gap-1 mt-1"><select value={form.contaId} onChange={(e) => setForm({ ...form, contaId: e.target.value })} className="min-w-0 flex-1 p-2.5 bg-zinc-900 rounded-lg"><option value="">Sem vínculo</option>{bankAccounts.map((account) => <option key={account.id} value={account.id}>{account.banco} • {account.conta}</option>)}</select><button type="button" onClick={createBank} className="px-2 rounded-lg border border-amber-500/30 text-amber-300">Novo</button><button type="button" onClick={editBank} disabled={!form.contaId} className="px-2 rounded-lg border border-zinc-700 text-zinc-300 disabled:opacity-40">Editar</button></div></label><label className="sm:col-span-2">Observação<textarea value={form.observacao} onChange={(e) => setForm({ ...form, observacao: e.target.value })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg" /></label></div><div className="flex justify-end gap-2"><button type="button" onClick={() => setForm(null)} className="px-4 py-2 text-zinc-400">Cancelar</button><button className="px-5 py-2 bg-amber-500 text-zinc-950 rounded-xl font-black">Salvar movimentação</button></div></form></div>}
+      {form && <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"><form onSubmit={saveManual} className="w-full max-w-xl bg-zinc-950 border border-amber-500/30 rounded-2xl p-5 space-y-4"><div className="flex justify-between"><div><h3 className="font-black">{editingId ? 'Editar' : 'Registrar'} {form.tipo === 'RECEITA' ? 'receita recebida' : 'despesa paga'}</h3><p className="text-xs text-zinc-400">Este formulário registra dinheiro já efetivamente movimentado. Compras no crédito devem ser cadastradas em Cartões.</p></div><button type="button" onClick={() => setForm(null)}><X className="w-5 h-5" /></button></div><div className="grid sm:grid-cols-2 gap-3 text-xs"><label className="sm:col-span-2">Descrição<input value={form.descricao} onChange={(e) => setForm({ ...form, descricao: e.target.value })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg" required /></label><label>Valor<CurrencyInput value={form.valor} onChange={(valor) => setForm({ ...form, valor })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg" /></label><label>Data efetiva<input type="date" value={form.data} onChange={(e) => setForm({ ...form, data: e.target.value })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg" required /></label><label>Categoria<div className="flex gap-1 mt-1"><select value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })} className="min-w-0 flex-1 p-2.5 bg-zinc-900 rounded-lg"><option value="" disabled>Selecione uma categoria</option>{categories.map((value) => <option key={value} value={value}>{value}</option>)}</select><button type="button" onClick={createCategory} className="px-2 rounded-lg border border-amber-500/30 text-amber-300">Nova</button></div></label><label>Forma<select value={form.forma} onChange={(e) => setForm({ ...form, forma: e.target.value })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg">{METHODS.map((value) => <option key={value}>{value}</option>)}</select></label><label className="sm:col-span-2">Conta, banco ou carteira<div className="flex gap-1 mt-1"><select value={form.contaId} onChange={(e) => setForm({ ...form, contaId: e.target.value })} className="min-w-0 flex-1 p-2.5 bg-zinc-900 rounded-lg"><option value="">Sem vínculo</option>{bankAccounts.map((account) => <option key={account.id} value={account.id}>{account.banco} • {account.conta}</option>)}</select><button type="button" onClick={createBank} className="px-2 rounded-lg border border-amber-500/30 text-amber-300">Novo</button><button type="button" onClick={editBank} disabled={!form.contaId} className="px-2 rounded-lg border border-zinc-700 text-zinc-300 disabled:opacity-40">Editar</button></div></label><label className="sm:col-span-2">Observação<textarea value={form.observacao} onChange={(e) => setForm({ ...form, observacao: e.target.value })} className="block w-full mt-1 p-2.5 bg-zinc-900 rounded-lg" /></label></div><div className="flex justify-end gap-2"><button type="button" onClick={() => setForm(null)} className="px-4 py-2 text-zinc-400">Cancelar</button><button className="px-5 py-2 bg-amber-500 text-zinc-950 rounded-xl font-black">Salvar movimentação</button></div></form></div>}
     </div>
   );
 };

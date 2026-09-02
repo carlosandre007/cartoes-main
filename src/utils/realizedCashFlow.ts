@@ -1,85 +1,54 @@
-import { CreditCard, Transaction, TransactionType } from '../types';
-import { getCanonicalTransactions, resolveTransactionCard } from './financialCalculations';
+import { Transaction, TransactionType } from '../types';
 
 export type CashFlowOrigin = 'RECEITA_PESSOAL' | 'DESPESA_PESSOAL' | 'CUSTO_FIXO' | 'PAGAMENTO_CARTAO';
+export const AUREUM_FLOW_COST_CENTER = 'Fluxo Financeiro Aureum';
+const AUTO_REFERENCE = /^\[AUREUM_FLOW:(CUSTO_FIXO|PAGAMENTO_CARTAO):([^\]]+)\](?:\s*)/;
 
 export interface RealizedCashFlowItem {
-  id: string;
-  sourceTransactionIds: string[];
-  tipo: TransactionType;
-  descricao: string;
-  valor: number;
-  dataEfetiva: string;
-  categoria: string;
-  formaPagamento: string;
-  origem: CashFlowOrigin;
-  observacao?: string;
-  contaNome?: string;
-  editable: boolean;
+  id: string; sourceTransactionIds: string[]; tipo: TransactionType; descricao: string;
+  valor: number; dataEfetiva: string; categoria: string; empresa: string; formaPagamento: string;
+  origem: CashFlowOrigin; observacao?: string; contaNome?: string; editable: boolean;
 }
-
 export interface CashFlowFilters {
-  startDate?: string;
-  endDate?: string;
-  tipo?: TransactionType | 'TODOS';
-  origem?: CashFlowOrigin | 'TODAS';
-  search?: string;
+  startDate?: string; endDate?: string; tipo?: TransactionType | 'TODOS';
+  origem?: CashFlowOrigin | 'TODAS'; search?: string;
 }
 
 const cents = (value: number) => Math.round(value * 100);
 const money = (valueInCents: number) => valueInCents / 100;
-const isManualPersonal = (tx: Transaction) =>
-  tx.status === 'PAGO' &&
-  tx.origemFinanceira === 'OUTRO' &&
-  tx.centroCusto === 'Fluxo pessoal';
 
-export const buildRealizedCashFlow = (transactions: Transaction[], cards: CreditCard[]): RealizedCashFlowItem[] => {
-  const result: RealizedCashFlowItem[] = [];
-  const cardPayments = new Map<string, Transaction[]>();
+export const createAutomaticFlowTransaction = (
+  origin: 'CUSTO_FIXO' | 'PAGAMENTO_CARTAO', reference: string,
+  source: Pick<Transaction, 'descricao' | 'valor' | 'categoria' | 'empresa' | 'formaPagamento'>,
+  paymentDate: string, extra?: { contaNome?: string; description?: string }
+): Transaction => ({
+  id: `aureum-flow-${origin.toLowerCase()}-${reference}`,
+  tipo: 'DESPESA', descricao: extra?.description || source.descricao,
+  valor: money(cents(source.valor)), data: paymentDate, categoria: source.categoria,
+  empresa: source.empresa || 'Pessoal', centroCusto: AUREUM_FLOW_COST_CENTER,
+  formaPagamento: source.formaPagamento || extra?.contaNome || 'Não informado',
+  origemFinanceira: 'OUTRO', status: 'PAGO',
+  observacao: `[AUREUM_FLOW:${origin}:${reference}]`, contaBancariaNome: extra?.contaNome,
+});
 
-  getCanonicalTransactions(transactions).forEach((tx) => {
-    if (isManualPersonal(tx)) {
-      result.push({
-        id: `manual-${tx.id}`, sourceTransactionIds: [tx.id], tipo: tx.tipo,
-        descricao: tx.descricao, valor: money(cents(tx.valor)), dataEfetiva: tx.data,
-        categoria: tx.categoria, formaPagamento: tx.formaPagamento,
-        origem: tx.tipo === 'RECEITA' ? 'RECEITA_PESSOAL' : 'DESPESA_PESSOAL',
-        observacao: tx.observacao, contaNome: tx.contaBancariaNome, editable: true,
-      });
-      return;
-    }
-
-    if (tx.origemFinanceira === 'CUSTO_FIXO' && tx.status === 'PAGO' && tx.custoFixoDetalhes?.dataPagamento) {
-      result.push({
-        id: `fixed-payment-${tx.id}`, sourceTransactionIds: [tx.id], tipo: 'DESPESA',
-        descricao: tx.descricao, valor: money(cents(tx.custoFixoDetalhes.valorPago ?? tx.valor)),
-        dataEfetiva: tx.custoFixoDetalhes.dataPagamento, categoria: tx.categoria,
-        formaPagamento: tx.formaPagamento, origem: 'CUSTO_FIXO', observacao: tx.observacao,
-        contaNome: tx.contaBancariaNome, editable: false,
-      });
-      return;
-    }
-
-    const paymentId = tx.cartaoDetalhes?.pagamentoFaturaId;
-    if (tx.origemFinanceira === 'CARTAO_CREDITO' && tx.status === 'PAGO' && paymentId && tx.cartaoDetalhes?.dataPagamentoFatura) {
-      cardPayments.set(paymentId, [...(cardPayments.get(paymentId) || []), tx]);
-    }
-  });
-
-  cardPayments.forEach((items, paymentId) => {
-    const first = items[0];
-    const card = resolveTransactionCard(first, cards);
-    result.push({
-      id: paymentId, sourceTransactionIds: items.map((tx) => tx.id), tipo: 'DESPESA',
-      descricao: `Pagamento da fatura ${card?.nome || first.cartaoDetalhes?.cartaoNome || 'Cartão'}`,
-      valor: money(items.reduce((sum, tx) => sum + cents(tx.valor), 0)),
-      dataEfetiva: first.cartaoDetalhes!.dataPagamentoFatura!, categoria: 'Pagamento de fatura',
-      formaPagamento: first.contaBancariaNome || 'Conta bancária', origem: 'PAGAMENTO_CARTAO',
-      contaNome: first.contaBancariaNome, editable: false,
-    });
-  });
-
-  return result.sort((left, right) => right.dataEfetiva.localeCompare(left.dataEfetiva) || right.id.localeCompare(left.id));
+// Somente registros materializados especificamente para esta aba entram no fluxo.
+// Nenhum custo, cartão ou pagamento legado é inferido das demais áreas.
+export const buildRealizedCashFlow = (transactions: Transaction[]): RealizedCashFlowItem[] => {
+  const unique = new Map(transactions.map((tx) => [tx.id, tx]));
+  return Array.from(unique.values()).filter((tx) =>
+    tx.centroCusto === AUREUM_FLOW_COST_CENTER && tx.status === 'PAGO'
+  ).map((tx) => {
+    const reference = tx.observacao?.match(AUTO_REFERENCE);
+    const origem: CashFlowOrigin = reference?.[1] as CashFlowOrigin
+      || (tx.tipo === 'RECEITA' ? 'RECEITA_PESSOAL' : 'DESPESA_PESSOAL');
+    return {
+      id: tx.id, sourceTransactionIds: [tx.id], tipo: tx.tipo, descricao: tx.descricao,
+      valor: money(cents(tx.valor)), dataEfetiva: tx.data, categoria: tx.categoria, empresa: tx.empresa,
+      formaPagamento: tx.formaPagamento, origem,
+      observacao: tx.observacao?.replace(AUTO_REFERENCE, ''), contaNome: tx.contaBancariaNome,
+      editable: !reference,
+    };
+  }).sort((left, right) => right.dataEfetiva.localeCompare(left.dataEfetiva) || right.id.localeCompare(left.id));
 };
 
 export const filterRealizedCashFlow = (items: RealizedCashFlowItem[], filters: CashFlowFilters) => {

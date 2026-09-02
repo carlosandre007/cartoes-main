@@ -24,6 +24,7 @@ import { ReportsView } from './views/ReportsView';
 import { SettingsView } from './views/SettingsView';
 import { FinancialIntelligenceView } from './views/FinancialIntelligenceView';
 import { Impress3DView } from './views/Impress3DView';
+import { FinancialControlView } from './views/FinancialControlView';
 
 const MainContent: React.FC = () => {
   const { activeView, isNewTransactionOpen, openNewTransactionModal, closeNewTransactionModal } = useFinancial();
@@ -62,6 +63,8 @@ const MainContent: React.FC = () => {
         return <FinancialIntelligenceView />;
       case 'configuracoes':
         return <SettingsView />;
+      case 'controle':
+        return <FinancialControlView />;
       case 'impress3d':
         return <Impress3DView />;
       default:

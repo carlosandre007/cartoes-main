@@ -153,4 +153,5 @@ export type ViewTab =
   | 'relatorios'
   | 'inteligencia'
   | 'configuracoes'
+  | 'controle'
   | 'impress3d';

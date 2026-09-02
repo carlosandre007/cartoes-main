@@ -32,6 +32,12 @@ export const supabase = createClient(
   supabaseAnonKey || 'placeholder-key'
 );
 
+const requireUserId = async () => {
+  const { data, error } = await supabase.auth.getUser();
+  if (error || !data.user?.id) throw error || new Error('Usuário não autenticado.');
+  return data.user.id;
+};
+
 // ==============================================================================
 // MAPPER HELPERS (CamelCase <-> Snake_Case)
 // ==============================================================================
@@ -56,8 +62,9 @@ export const mapTransactionFromDB = (row: any): Transaction => ({
   contaBancariaNome: row.conta_bancaria_nome || undefined,
 });
 
-export const mapTransactionToDB = (tx: Transaction) => ({
+export const mapTransactionToDB = (tx: Transaction, userId?: string) => ({
   id: tx.id,
+  ...(userId ? { user_id: userId } : {}),
   tipo: tx.tipo,
   descricao: tx.descricao,
   valor: tx.valor,
@@ -89,8 +96,9 @@ export const mapCardFromDB = (row: any): CreditCard => ({
   categoriaCard: row.categoria_card || 'AUREUM BLACK',
 });
 
-export const mapCardToDB = (card: CreditCard) => ({
+export const mapCardToDB = (card: CreditCard, userId?: string) => ({
   id: card.id,
+  ...(userId ? { user_id: userId } : {}),
   nome: card.nome,
   bandeira: card.bandeira,
   final_cartao: card.finalCartao,
@@ -121,8 +129,9 @@ export const mapContractFromDB = (row: any): CreditContract => ({
   status: row.status || 'EM_DIA',
 });
 
-export const mapContractToDB = (contract: CreditContract) => ({
+export const mapContractToDB = (contract: CreditContract, userId?: string) => ({
   id: contract.id,
+  ...(userId ? { user_id: userId } : {}),
   titulo: contract.titulo,
   tipo: contract.tipo,
   instituicao: contract.instituicao,
@@ -151,8 +160,9 @@ export const mapBankAccountFromDB = (row: any): BankAccount => ({
   ativa: Boolean(row.ativa),
 });
 
-export const mapBankAccountToDB = (bank: BankAccount) => ({
+export const mapBankAccountToDB = (bank: BankAccount, userId?: string) => ({
   id: bank.id,
+  ...(userId ? { user_id: userId } : {}),
   banco: bank.banco,
   agencia: bank.agencia,
   conta: bank.conta,
@@ -172,8 +182,9 @@ export const mapGoalFromDB = (row: any): FinancialGoal => ({
   corIcone: row.cor_icone || 'text-amber-400',
 });
 
-export const mapGoalToDB = (goal: FinancialGoal) => ({
+export const mapGoalToDB = (goal: FinancialGoal, userId?: string) => ({
   id: goal.id,
+  ...(userId ? { user_id: userId } : {}),
   titulo: goal.titulo,
   categoria: goal.categoria,
   valor_alvo: goal.valorAlvo,
@@ -191,8 +202,9 @@ export const mapNotificationFromDB = (row: any): NotificationItem => ({
   tipo: row.tipo,
 });
 
-export const mapNotificationToDB = (n: NotificationItem) => ({
+export const mapNotificationToDB = (n: NotificationItem, userId?: string) => ({
   id: n.id,
+  ...(userId ? { user_id: userId } : {}),
   titulo: n.titulo,
   mensagem: n.mensagem,
   data: n.data,
@@ -240,6 +252,32 @@ export const supabaseAuth = {
 // ==============================================================================
 
 export const supabaseApi = {
+  async getCategories(): Promise<string[]> {
+    if (!isSupabaseConfigured) return [];
+    const { data, error } = await supabase.from('financial_categories').select('name').order('name');
+    if (error) return [];
+    return (data || []).map((row: any) => String(row.name)).filter(Boolean);
+  },
+
+  async replaceCategories(names: string[]): Promise<{ success: boolean; error?: any }> {
+    if (!isSupabaseConfigured) return { success: true };
+    const { data: userData } = await supabase.auth.getUser();
+    const userId = userData.user?.id;
+    if (!userId) return { success: false, error: 'Usuário não autenticado' };
+    const { data: current, error: readError } = await supabase.from('financial_categories').select('name').eq('user_id', userId);
+    if (readError) return { success: false, error: readError };
+    if (names.length) {
+      const { error: upsertError } = await supabase.from('financial_categories').upsert(names.map((name) => ({ user_id: userId, name })), { onConflict: 'user_id,name' });
+      if (upsertError) return { success: false, error: upsertError };
+    }
+    const removed = (current || []).map((row: any) => String(row.name)).filter((name) => !names.includes(name));
+    if (removed.length) {
+      const { error: deleteError } = await supabase.from('financial_categories').delete().eq('user_id', userId).in('name', removed);
+      if (deleteError) return { success: false, error: deleteError };
+    }
+    return { success: true };
+  },
+
   async deleteById(table: string, id: string): Promise<{ success: boolean; error?: any }> {
     if (!isSupabaseConfigured) return { success: true };
     const { error } = await supabase.from(table).delete().eq('id', id);

@@ -63,6 +63,7 @@ export const Sidebar: React.FC = () => {
     { id: 'saude', label: 'Saúde Financeira', icon: ShieldCheck },
     { id: 'quitacao', label: 'Planejamento Quitação', icon: Calculator, badge: 'Simulador' },
     { id: 'relatorios', label: 'Relatórios & BI', icon: PieChart },
+    { id: 'controle', label: 'Controle & Confiabilidade', icon: ShieldCheck, badge: 'Novo' },
     { id: 'configuracoes', label: 'Configurações', icon: Settings },
     { id: 'impress3d', label: 'IMPRESS 3D', icon: Printer, badge: 'Novo' },
   ];

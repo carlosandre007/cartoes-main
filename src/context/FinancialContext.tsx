@@ -13,6 +13,8 @@ import {
 import { isSupabaseConfigured, supabaseApi } from '../lib/supabase';
 import { addMonthsToCompetence, getConsolidatedFlowItems, getCurrentInvoiceCompetence, getInvoiceDueDate, getOpenCardInvoice, getOpenCardInvoices, getTransactionInvoiceCompetence, resolveTransactionCard } from '../utils/financialCalculations';
 import { createNextFixedCostOccurrences, getFixedCostRecurrenceId } from '../utils/fixedCostRecurrence';
+import { appendAuditEntries, isMonthLocked } from '../utils/financialGovernance';
+import { createAutomaticFlowTransaction } from '../utils/realizedCashFlow';
 
 interface FinancialContextType {
   transactions: Transaction[];
@@ -136,6 +138,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   const hasLoadedRemoteData = useRef(!isSupabaseConfigured);
   const skipNextTransactionSync = useRef(false);
   const transactionSyncQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const auditSnapshotRef = useRef<Transaction[] | null>(null);
 
   // Supabase Initial Sync
   useEffect(() => {
@@ -175,6 +178,22 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   useEffect(() => {
     if (dataLoadState === 'ready') setDataLastUpdatedAt(new Date());
   }, [transactions, cards, contracts]);
+
+  useEffect(() => {
+    if (dataLoadState !== 'ready') return;
+    const previous = auditSnapshotRef.current;
+    auditSnapshotRef.current = transactions.map((tx) => ({ ...tx }));
+    if (!previous) return;
+    const before = new Map(previous.map((tx) => [tx.id, tx]));
+    const after = new Map(transactions.map((tx) => [tx.id, tx]));
+    const timestamp = new Date().toISOString();
+    const entries = [
+      ...transactions.filter((tx) => !before.has(tx.id)).map((tx) => ({ id: createId('audit'), timestamp, entity: 'transaction', entityId: tx.id, action: 'CRIADO' as const, after: tx })),
+      ...transactions.filter((tx) => before.has(tx.id) && JSON.stringify(before.get(tx.id)) !== JSON.stringify(tx)).map((tx) => ({ id: createId('audit'), timestamp, entity: 'transaction', entityId: tx.id, action: 'ALTERADO' as const, before: before.get(tx.id), after: tx })),
+      ...previous.filter((tx) => !after.has(tx.id)).map((tx) => ({ id: createId('audit'), timestamp, entity: 'transaction', entityId: tx.id, action: 'EXCLUIDO' as const, before: tx })),
+    ];
+    appendAuditEntries(entries);
+  }, [transactions, dataLoadState]);
 
   // Sync to local storage & Supabase
   useEffect(() => {
@@ -510,6 +529,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   // Add Transaction
   const addTransaction = (txData: Omit<Transaction, 'id'>, generateInstallments = false) => {
+    if (isMonthLocked(txData.data)) { alert('Esta competência está fechada. Reabra o mês antes de incluir lançamentos.'); return; }
     const id = createId('tx');
     let newTx: Transaction = { ...txData, id };
     if (newTx.origemFinanceira === 'CUSTO_FIXO' && newTx.custoFixoDetalhes) {
@@ -624,6 +644,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   const updateTransaction = (id: string, updated: Partial<Transaction>) => {
     const current = transactions.find((tx) => tx.id === id);
     if (!current) return;
+    if (isMonthLocked(current.data) || (updated.data && isMonthLocked(updated.data))) { alert('Esta competência está fechada. Reabra o mês antes de editar lançamentos.'); return; }
     let next = { ...current, ...updated };
     if (next.origemFinanceira === 'CARTAO_CREDITO' && next.cartaoDetalhes) {
       const card = cards.find((item) => item.id === next.cartaoDetalhes!.cartaoId);
@@ -659,6 +680,8 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   };
 
   const saveTransactionBatch = async (upserts: Transaction[], deletedIds: string[] = []) => {
+    const locked = [...upserts.map((tx) => tx.data), ...transactions.filter((tx) => deletedIds.includes(tx.id)).map((tx) => tx.data)].find(isMonthLocked);
+    if (locked) return { success: false, error: new Error(`A competência ${locked.slice(0, 7)} está fechada.`) };
     const uniqueDeletes = Array.from(new Set(deletedIds));
     const uniqueUpserts = Array.from(new Map(upserts.map((tx) => [tx.id, tx])).values()).map((next) => {
       const current = transactions.find((tx) => tx.id === next.id);
@@ -731,6 +754,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   // Delete Transaction
   const deleteTransaction = (id: string) => {
     const current = transactions.find((tx) => tx.id === id);
+    if (current && isMonthLocked(current.data)) { alert('Esta competência está fechada. Reabra o mês antes de excluir lançamentos.'); return; }
     if (current?.status === 'PAGO' && current.contaBancariaId) {
       const reversal = current.tipo === 'RECEITA' ? -current.valor : current.valor;
       setBankAccounts((accounts) =>
@@ -750,6 +774,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   const deleteTransactions = async (ids: string[]): Promise<boolean> => {
     const uniqueIds = Array.from(new Set(ids));
     if (!uniqueIds.length) return true;
+    if (transactions.some((tx) => uniqueIds.includes(tx.id) && isMonthLocked(tx.data))) { alert('Há lançamentos em competência fechada. Reabra o mês antes de excluir.'); return false; }
     if (isSupabaseConfigured) {
       const result = await supabaseApi.deleteByIds('transactions', uniqueIds);
       if (!result.success) {
@@ -791,7 +816,12 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
           }
         : current.custoFixoDetalhes,
     };
-    const result = await saveTransactionBatch([next]);
+    const flowEntry = newStatus === 'PAGO' && current.origemFinanceira === 'CUSTO_FIXO'
+      ? createAutomaticFlowTransaction('CUSTO_FIXO', current.id, {
+          ...current, valor: current.custoFixoDetalhes?.valorPago ?? current.valor,
+        }, today, { description: `Pagamento de custo fixo: ${current.descricao}` })
+      : undefined;
+    const result = await saveTransactionBatch(flowEntry ? [next, flowEntry] : [next]);
     if (!result.success) {
       console.error('Erro ao atualizar status do lançamento:', result.error);
       alert(`Não foi possível atualizar o status no banco. ${String((result.error as any)?.message || result.error || '')}`);
@@ -840,7 +870,7 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
   };
 
   // Pay Card Invoice
-  const payCardInvoice = (cardId: string, billingMonth?: string) => {
+  const payCardInvoice = async (cardId: string, billingMonth?: string) => {
     const card = cards.find((c) => c.id === cardId);
     if (!card) return;
 
@@ -856,36 +886,30 @@ export const FinancialProvider: React.FC<{ children: ReactNode }> = ({ children 
     const invoiceTransactions = targetInvoice?.transactions || [];
     const valorFatura = invoiceTransactions.reduce((sum, tx) => sum + tx.valor, 0);
     if (valorFatura <= 0) return;
-    const invoiceTransactionIds = new Set(invoiceTransactions.map((tx) => tx.id));
     const paymentDate = new Date().toISOString().slice(0, 10);
-    const paymentId = `card-payment-${card.id}-${targetInvoice!.competence}-${globalThis.crypto?.randomUUID?.() || Date.now()}`;
-
-    // Os próprios lançamentos do cartão formam o fluxo único. A quitação
-    // baixa esses lançamentos na conta, sem criar uma segunda despesa.
-    setTransactions((prev) =>
-      prev.map((tx) => {
-        if (invoiceTransactionIds.has(tx.id)) {
-          return {
-            ...tx,
-            status: 'PAGO',
-            contaBancariaId: paymentAccount.id,
-            contaBancariaNome: paymentAccount.banco,
-            cartaoDetalhes: {
-              ...tx.cartaoDetalhes!, pagamentoFaturaId: paymentId, dataPagamentoFatura: paymentDate,
-            },
-          };
-        }
-        return tx;
-      })
+    const paymentId = `card-payment-${card.id}-${targetInvoice!.competence}`;
+    const paidItems = invoiceTransactions.map((tx) => ({
+      ...tx, status: 'PAGO' as const, contaBancariaId: paymentAccount.id,
+      contaBancariaNome: paymentAccount.banco,
+      cartaoDetalhes: { ...tx.cartaoDetalhes!, pagamentoFaturaId: paymentId, dataPagamentoFatura: paymentDate },
+    }));
+    const byCompany = new Map<string, Transaction[]>();
+    invoiceTransactions.forEach((tx) => {
+      const company = tx.empresa || 'Pessoal';
+      byCompany.set(company, [...(byCompany.get(company) || []), tx]);
+    });
+    const flowEntries = Array.from(byCompany.entries()).map(([company, items]) =>
+      createAutomaticFlowTransaction('PAGAMENTO_CARTAO', `${card.id}-${targetInvoice!.competence}-${company}`, {
+        descricao: `Pagamento da fatura ${card.nome}`, valor: items.reduce((sum, tx) => sum + tx.valor, 0),
+        categoria: 'Pagamento de fatura', empresa: company, formaPagamento: paymentAccount.banco,
+      }, paymentDate, { contaNome: paymentAccount.banco })
     );
-
-    setBankAccounts((prev) =>
-      prev.map((account) =>
-        account.id === paymentAccount.id
-          ? { ...account, saldo: account.saldo - valorFatura }
-          : account
-      )
-    );
+    const result = await saveTransactionBatch([...paidItems, ...flowEntries]);
+    if (!result.success) {
+      console.error('Erro ao quitar fatura:', result.error);
+      alert('Não foi possível quitar a fatura no banco de dados.');
+      return;
+    }
 
     // Notification
     const notif: NotificationItem = {
