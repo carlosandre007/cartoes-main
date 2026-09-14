@@ -19,15 +19,39 @@ import {
 } from 'lucide-react';
 import { useFinancial } from '../context/FinancialContext';
 import { parseCSVToCardPurchases, parseRowsToCardPurchases } from '../utils/importExport';
-import { addMonthsToCompetence, getCardInvoices, getCurrentInvoiceCompetence, getInvoiceStatementAmount, getOpenCardInvoice, getOpenCardInvoices, transactionBelongsToCard } from '../utils/financialCalculations';
+import { addMonthsToCompetence, getCardInvoices, getCurrentInvoiceCompetence, getOpenCardInvoice, getOpenCardInvoices, transactionBelongsToCard } from '../utils/financialCalculations';
 import { CurrencyInput } from '../components/CurrencyInput';
 import { useCategories } from '../hooks/useCategories';
+import type { CreditCard, Transaction } from '../types';
 
 export const InvoiceTotalValue: React.FC<{ amount: number; className?: string }> = ({ amount, className = '' }) => (
   <span className={className}>
     R$ {amount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
   </span>
 );
+
+const getCardHistoryTransactions = (transactions: Transaction[], cards: CreditCard[], cardId: string) => {
+  const groups = new Map<string, Transaction[]>();
+  transactions
+    .filter((tx) => transactionBelongsToCard(tx, cards, cardId))
+    .forEach((tx) => {
+      const total = tx.cartaoDetalhes?.parcelasTotal || 1;
+      const baseId = total > 1 ? tx.id.replace(/-\d+$/, '') : tx.id;
+      groups.set(baseId, [...(groups.get(baseId) || []), tx]);
+    });
+
+  return Array.from(groups.values()).map((items) => {
+    const first = [...items].sort((a, b) => (a.cartaoDetalhes?.parcelaAtual || 1) - (b.cartaoDetalhes?.parcelaAtual || 1))[0];
+    if (first.cartaoDetalhes?.dataCompra) return first;
+    const firstInstallment = first.cartaoDetalhes?.parcelaAtual || 1;
+    const purchaseDate = new Date(`${first.data}T12:00:00`);
+    purchaseDate.setMonth(purchaseDate.getMonth() - (firstInstallment - 1));
+    return { ...first, cartaoDetalhes: { ...first.cartaoDetalhes!, dataCompra: purchaseDate.toISOString().slice(0, 10) } };
+  });
+};
+
+const sumHistoryAmount = (items: Transaction[]) =>
+  items.reduce((total, tx) => total + Math.round(tx.valor * 100), 0) / 100;
 
 export const CardsView: React.FC = () => {
   const { cards, transactions, payCardInvoice, openNewTransactionModal, addCard, updateCard, deleteCard, addTransaction, updateTransaction, saveTransactionBatch, deleteTransaction } = useFinancial();
@@ -406,25 +430,7 @@ export const CardsView: React.FC = () => {
   };
 
   const selectedInvoice = selectedCard ? getOpenCardInvoice(transactions, cards, selectedCard.id) : undefined;
-  const cardTransactions = (() => {
-    if (!selectedCard) return [];
-    const groups = new Map<string, typeof transactions>();
-    transactions
-      .filter((tx) => transactionBelongsToCard(tx, cards, selectedCard.id))
-      .forEach((tx) => {
-        const total = tx.cartaoDetalhes?.parcelasTotal || 1;
-        const baseId = total > 1 ? tx.id.replace(/-\d+$/, '') : tx.id;
-        groups.set(baseId, [...(groups.get(baseId) || []), tx]);
-      });
-    return Array.from(groups.values()).map((items) => {
-      const first = [...items].sort((a, b) => (a.cartaoDetalhes?.parcelaAtual || 1) - (b.cartaoDetalhes?.parcelaAtual || 1))[0];
-      if (first.cartaoDetalhes?.dataCompra) return first;
-      const firstInstallment = first.cartaoDetalhes?.parcelaAtual || 1;
-      const purchaseDate = new Date(`${first.data}T12:00:00`);
-      purchaseDate.setMonth(purchaseDate.getMonth() - (firstInstallment - 1));
-      return { ...first, cartaoDetalhes: { ...first.cartaoDetalhes!, dataCompra: purchaseDate.toISOString().slice(0, 10) } };
-    });
-  })().sort((a, b) => {
+  const cardTransactions = (selectedCard ? getCardHistoryTransactions(transactions, cards, selectedCard.id) : []).sort((a, b) => {
     return (b.cartaoDetalhes?.dataCompra || b.data)
       .localeCompare(a.cartaoDetalhes?.dataCompra || a.data);
   });
@@ -433,7 +439,7 @@ export const CardsView: React.FC = () => {
         .format(new Date(`${selectedInvoice.competence}-01T12:00:00Z`))
     : '';
 
-  const totalFaturaAtual = getInvoiceStatementAmount(selectedInvoice);
+  const totalFaturaAtual = sumHistoryAmount(cardTransactions);
   const saldoFaturaAtual = selectedInvoice?.outstandingAmount || 0;
   const totalEmAbertoCartao = selectedCard
     ? getOpenCardInvoices(transactions, cards).filter((invoice) => invoice.cardId === selectedCard.id).reduce((sum, invoice) => sum + invoice.amount, 0)
@@ -864,7 +870,7 @@ export const CardsView: React.FC = () => {
             .filter((invoice) => invoice.cardId === card.id && invoice.status === 'PAGO')
             .at(-1);
           const cardInvoice = openInvoice || latestClosedInvoice;
-          const cardFatura = getInvoiceStatementAmount(cardInvoice);
+          const cardFatura = sumHistoryAmount(getCardHistoryTransactions(transactions, cards, card.id));
           const cardSaldo = cardInvoice?.outstandingAmount || 0;
 
           return (
@@ -1085,7 +1091,7 @@ export const CardsView: React.FC = () => {
           {cardTransactions.length > 0 && (
             <div className="pt-4 mt-4 border-t border-amber-500/20 flex items-center justify-between gap-4">
               <div>
-                <span className="text-xs font-bold text-zinc-200 block">Total da Fatura Atual</span>
+                <span className="text-xs font-bold text-zinc-200 block">Total informado no histórico</span>
                 <span className="text-[10px] text-zinc-500 font-mono">
                   {selectedInvoiceMonth ? `Competência: ${selectedInvoiceMonth}` : 'Nenhuma fatura aberta'}
                 </span>

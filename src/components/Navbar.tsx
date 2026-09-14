@@ -101,7 +101,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenNotifications }) => {
   };
 
   return (
-    <header className="h-16 sm:h-18 bg-zinc-950/80 dark:bg-zinc-950/80 light:bg-white/90 backdrop-blur-md border-b border-amber-500/15 px-3 sm:px-6 flex items-center justify-between sticky top-0 z-20 transition-colors duration-200">
+    <header className="h-16 sm:h-18 bg-zinc-950/80 backdrop-blur-md border-b border-amber-500/15 px-3 sm:px-6 flex items-center justify-between sticky top-0 z-20 transition-colors duration-200">
       {/* Mobile Menu Toggle & Title */}
       <div className="flex items-center gap-2.5 sm:gap-3">
         <button

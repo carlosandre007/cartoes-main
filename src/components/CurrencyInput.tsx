@@ -78,39 +78,71 @@ export const CurrencyInput: React.FC<CurrencyInputProps> = ({
 
   const displayValue = centsToDisplay(cents, negative);
 
+  const commitCents = (nextCents: string, nextNegative = negative) => {
+    const normalized = nextCents.replace(/\D/g, '').replace(/^0+(?=\d)/, '') || '0';
+    setCents(normalized);
+    const numVal = parseInt(normalized, 10) / 100;
+    onChange(nextNegative ? -numVal : numVal);
+  };
+
+  const appendDigits = (digits: string) => {
+    const cleanDigits = digits.replace(/\D/g, '');
+    if (!cleanDigits) return;
+    const nextCents = (cents === '0' ? cleanDigits : cents + cleanDigits).slice(0, 13);
+    commitCents(nextCents);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Backspace') {
       e.preventDefault();
-      const newCents = cents.length > 1 ? cents.slice(0, -1) : '0';
-      setCents(newCents);
-      const numVal = parseInt(newCents, 10) / 100;
-      onChange(negative ? -numVal : numVal);
+      commitCents(cents.length > 1 ? cents.slice(0, -1) : '0');
       return;
     }
     if (e.key === 'Delete') {
       e.preventDefault();
-      setCents('0');
-      onChange(0);
+      commitCents('0');
       return;
     }
     if (allowNegative && e.key === '-') {
       e.preventDefault();
       const newNeg = !negative;
       setNegative(newNeg);
-      const numVal = parseInt(cents, 10) / 100;
-      onChange(newNeg ? -numVal : numVal);
+      commitCents(cents, newNeg);
       return;
     }
     if (e.key === 'Tab' || e.key === 'Enter') return;
     if (e.key.match(/^\d$/)) {
       e.preventDefault();
       // Limit to prevent overflow (max ~99 billion)
-      if (cents.length >= 13) return;
-      const newCents = cents === '0' ? e.key : cents + e.key;
-      setCents(newCents);
-      const numVal = parseInt(newCents, 10) / 100;
-      onChange(negative ? -numVal : numVal);
+      if (cents.length < 13) appendDigits(e.key);
     }
+  };
+
+  // Teclados virtuais normalmente nÃ£o disparam keydown. Trata o evento de input
+  // para que o mesmo campo funcione tanto no celular quanto no teclado fÃ­sico.
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const nativeEvent = e.nativeEvent as InputEvent;
+    const inputType = nativeEvent.inputType;
+    if (inputType === 'deleteContentBackward' || inputType === 'deleteContentForward') {
+      commitCents(cents.length > 1 ? cents.slice(0, -1) : '0');
+      return;
+    }
+    if (inputType === 'deleteByCut' || inputType === 'deleteByDrag') {
+      commitCents('0');
+      return;
+    }
+    if (inputType === 'insertFromPaste') {
+      commitCents(e.target.value);
+      return;
+    }
+    // Alguns teclados virtuais (principalmente Android) nÃ£o preenchem
+    // InputEvent.data. Nesse caso, o valor do prÃ³prio campo jÃ¡ contÃ©m os
+    // centavos digitados e deve substituir o estado, em vez de ser anexado.
+    if (nativeEvent.data) {
+      appendDigits(nativeEvent.data);
+      return;
+    }
+    commitCents(e.target.value);
   };
 
   return (
@@ -120,11 +152,11 @@ export const CurrencyInput: React.FC<CurrencyInputProps> = ({
       type="text"
       inputMode="numeric"
       value={displayValue}
-      readOnly
       required={required}
       disabled={disabled}
       placeholder={placeholder}
       onKeyDown={handleKeyDown}
+      onChange={handleChange}
       onFocus={() => inputRef.current?.select()}
       className={`cursor-text select-all ${className}`}
     />

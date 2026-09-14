@@ -372,7 +372,8 @@ export const supabaseApi = {
   async upsertTransactions(txs: Transaction[]): Promise<{ success: boolean; error?: any }> {
     if (!isSupabaseConfigured || !txs.length) return { success: true };
     try {
-      const dbRows = txs.map(mapTransactionToDB);
+      const userId = await requireUserId();
+      const dbRows = txs.map((tx) => mapTransactionToDB(tx, userId));
       const { data, error } = await supabase.from('transactions').upsert(dbRows).select();
       if (error) {
         console.error('[Supabase Error] upsertTransactions:', error);
@@ -409,7 +410,8 @@ export const supabaseApi = {
   async upsertCards(cards: CreditCard[]): Promise<{ success: boolean; error?: any }> {
     if (!isSupabaseConfigured || !cards.length) return { success: true };
     try {
-      const dbRows = cards.map(mapCardToDB);
+      const userId = await requireUserId();
+      const dbRows = cards.map((card) => mapCardToDB(card, userId));
       const { error } = await supabase.from('credit_cards').upsert(dbRows);
       if (error) {
         console.error('[Supabase Error] upsertCards:', error);
@@ -441,7 +443,8 @@ export const supabaseApi = {
   async upsertContracts(contracts: CreditContract[]): Promise<{ success: boolean; error?: any }> {
     if (!isSupabaseConfigured || !contracts.length) return { success: true };
     try {
-      const dbRows = contracts.map(mapContractToDB);
+      const userId = await requireUserId();
+      const dbRows = contracts.map((contract) => mapContractToDB(contract, userId));
       const { error } = await supabase.from('credit_contracts').upsert(dbRows);
       if (error) {
         // Compatibilidade com bancos criados antes dos campos de CET.
@@ -477,7 +480,8 @@ export const supabaseApi = {
   async upsertBankAccounts(banks: BankAccount[]): Promise<{ success: boolean; error?: any }> {
     if (!isSupabaseConfigured || !banks.length) return { success: true };
     try {
-      const dbRows = banks.map(mapBankAccountToDB);
+      const userId = await requireUserId();
+      const dbRows = banks.map((bank) => mapBankAccountToDB(bank, userId));
       const { error } = await supabase.from('bank_accounts').upsert(dbRows);
       if (error) {
         console.error('[Supabase Error] upsertBankAccounts:', error);
@@ -509,7 +513,8 @@ export const supabaseApi = {
   async upsertGoals(goals: FinancialGoal[]): Promise<{ success: boolean; error?: any }> {
     if (!isSupabaseConfigured || !goals.length) return { success: true };
     try {
-      const dbRows = goals.map(mapGoalToDB);
+      const userId = await requireUserId();
+      const dbRows = goals.map((goal) => mapGoalToDB(goal, userId));
       const { error } = await supabase.from('financial_goals').upsert(dbRows);
       if (error) {
         console.error('[Supabase Error] upsertGoals:', error);
@@ -541,7 +546,8 @@ export const supabaseApi = {
   async upsertNotifications(notifications: NotificationItem[]): Promise<{ success: boolean; error?: any }> {
     if (!isSupabaseConfigured || !notifications.length) return { success: true };
     try {
-      const dbRows = notifications.map(mapNotificationToDB);
+      const userId = await requireUserId();
+      const dbRows = notifications.map((notification) => mapNotificationToDB(notification, userId));
       const { error } = await supabase.from('notifications').upsert(dbRows);
       if (error) {
         console.error('[Supabase Error] upsertNotifications:', error);

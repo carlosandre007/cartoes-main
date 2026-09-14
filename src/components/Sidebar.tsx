@@ -69,7 +69,7 @@ export const Sidebar: React.FC = () => {
   ];
 
   const sidebarContent = (
-    <div className="flex flex-col h-full w-full bg-zinc-950 dark:bg-zinc-950 text-zinc-300 border-r border-amber-500/20 shadow-2xl">
+    <div className="flex flex-col h-full w-full bg-zinc-950 text-zinc-300 border-r border-amber-500/20 shadow-2xl">
       {/* Brand Header */}
       <div className={`p-4 sm:p-5 border-b border-amber-500/15 flex items-center justify-between ${isCollapsed ? 'lg:px-3 lg:flex-col lg:gap-2' : ''}`}>
         <div className="flex items-center gap-3">
